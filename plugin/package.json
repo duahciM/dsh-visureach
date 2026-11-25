@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-video-observer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Video observation tools: keyframe catalogue, change hints, native-resolution frame delivery and source-video resampling for an image-capable Agent.",
@@ -11,6 +11,7 @@
   },
   "files": [
     "index.js",
+    "integration.js",
     "cordis.patch.yml",
     "README.md",
     "locale/*.json",

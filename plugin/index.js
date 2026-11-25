@@ -12,21 +12,27 @@
  * no Harness package: it only uses services available on the context.
  */
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { appendFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { createReadStream, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { installExtensions } from './integration.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const INDEXER = join(HERE, 'python', 'index_video.py')
+const EVIDENCE_WORKER = join(HERE, 'python', 'evidence.py')
+const EXCLUDED_SHA256 = '7f74580c0426420011267f3ad0c68bfa8a53c91b2ae74fa168912a72d4a201cf'
+const CACHE_VERSION = 'observer-index-v2'
+const indexing = new Map()
+const archiveQueue = new Map()
 
 export const name = 'video-observer'
 export const inject = ['tools']
 
 /** Per-Session video bindings, keyed by the owning Agent id. */
-const bindings = new Map()
+const activeBindings = new WeakMap()
 
 /**
  * Append-only delivery ledger. Every catalogue query, frame read and resample
@@ -36,19 +42,44 @@ const bindings = new Map()
 function ledger(cache, agentId) {
   const folder = join(cache, 'sessions')
   const file = join(folder, `${String(agentId ?? 'unbound').replace(/[^\w.-]/g, '_')}.jsonl`)
+  let writing = Promise.resolve()
+  async function readLive() {
+    try { return await readFile(file, 'utf8') } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      const snapshotIndex = join(cache, 'archive', 'index.json')
+      if (!existsSync(snapshotIndex)) return ''
+      const snapshots = (await readJson(snapshotIndex)).entries?.[`${String(agentId).replace(/[^\w.-]/g, '_')}.jsonl`]?.snapshots ?? []
+      for (const snapshot of [...snapshots].reverse()) {
+        let bytes
+        try { bytes = await readFile(snapshot.path) } catch (e) { if (e.code === 'ENOENT') continue; throw e }
+        if (createHash('sha256').update(bytes).digest('hex') !== snapshot.hash) continue
+        await mkdir(folder, { recursive: true })
+        try { await writeFile(file, bytes, { flag: 'wx' }) } catch (e) { if (e.code !== 'EEXIST') throw e }
+        return await readFile(file, 'utf8')
+      }
+      if (snapshots.length) throw new Error('Session ledger and verified archive copies are unavailable.')
+      return ''
+    }
+  }
   return {
     file,
     async append(record) {
-      await mkdir(folder, { recursive: true })
-      await appendFile(file, `${JSON.stringify(record)}\n`, 'utf8')
+      writing = writing.catch(() => undefined).then(async () => {
+        await readLive() // Restore the last verified archive before starting a new ledger.
+        await mkdir(folder, { recursive: true })
+        await appendFile(file, `\n${JSON.stringify(record)}\n`, 'utf8')
+      })
+      return writing
     },
     async read() {
-      try {
-        const text = await readFile(file, 'utf8')
-        return text.split('\n').filter((line) => line.trim().length > 0).map((line) => JSON.parse(line))
-      } catch {
-        return []
+      const parsed = []
+      for (const [i, line] of (await readLive()).split('\n').entries()) {
+        if (line.trim().length === 0) continue
+        try { parsed.push(JSON.parse(line)) } catch {
+          parsed.push({ event: 'ledger_unreadable_line', line: i + 1 })
+        }
       }
+      return parsed
     },
   }
 }
@@ -61,6 +92,13 @@ function ledger(cache, agentId) {
  * deduplicated by content hash, so repeated passes are cheap and idempotent.
  */
 async function archiveLedgers(cache, reason) {
+  const preceding = archiveQueue.get(cache) ?? Promise.resolve()
+  const running = preceding.catch(() => undefined).then(() => archiveLedgersNow(cache, reason))
+  archiveQueue.set(cache, running)
+  try { return await running } finally { if (archiveQueue.get(cache) === running) archiveQueue.delete(cache) }
+}
+
+async function archiveLedgersNow(cache, reason) {
   const sessions = join(cache, 'sessions')
   const archiveRoot = join(cache, 'archive')
   const indexFile = join(archiveRoot, 'index.json')
@@ -80,7 +118,7 @@ async function archiveLedgers(cache, reason) {
   }
   index.entries ??= {}
 
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomUUID().slice(0, 8)
   let archived = 0
   let skipped = 0
   for (const name of names) {
@@ -112,7 +150,9 @@ async function archiveLedgers(cache, reason) {
     archived += 1
   }
   await mkdir(archiveRoot, { recursive: true })
-  await writeFile(indexFile, JSON.stringify({ ...index, reason, updatedAt: new Date().toISOString() }, null, 1), 'utf8')
+  const temporary = `${indexFile}.${randomUUID()}.tmp`
+  await writeFile(temporary, JSON.stringify({ ...index, reason, updatedAt: new Date().toISOString() }, null, 1), 'utf8')
+  await rename(temporary, indexFile)
   return { archived, skipped, reason }
 }
 
@@ -178,19 +218,22 @@ function resolvePython(config) {
   return 'python'
 }
 
-function run(command, argv, signal, cwd) {
+function run(command, argv, signal, cwd, ffmpegPath = '') {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, argv, {
       cwd,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1',
+        ...(ffmpegPath ? { PATH: `${dirname(ffmpegPath)}${delimiter}${process.env.PATH ?? ''}` } : {}) },
       windowsHide: true,
     })
     let stdout = ''
     let stderr = ''
     const onAbort = () => child.kill()
     signal?.addEventListener('abort', onAbort, { once: true })
-    child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8') })
-    child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8') })
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk) => { stdout += chunk })
+    child.stderr?.on('data', (chunk) => { stderr += chunk })
     child.on('error', (error) => {
       signal?.removeEventListener('abort', onAbort)
       reject(error)
@@ -213,12 +256,20 @@ function run(command, argv, signal, cwd) {
 const readJson = async (path) => JSON.parse(await readFile(path, 'utf8'))
 
 async function sha256File(path) {
-  return createHash('sha256').update(await readFile(path)).digest('hex')
+  const hash = createHash('sha256')
+  for await (const bytes of createReadStream(path)) hash.update(bytes)
+  return hash.digest('hex')
+}
+
+async function assertSource(binding) {
+  if (await sha256File(binding.manifest.video_path) !== binding.manifest.video_sha256) {
+    throw new Error('Source bytes changed. Reopen the video to create a new source binding.')
+  }
 }
 
 /** Resolve one video handle for the calling Agent, or explain why it is absent. */
 function bindingFor(exec) {
-  const binding = bindings.get(exec.agent?.id)
+  const binding = activeBindings.get(exec.agent?.session)
   if (binding === undefined) {
     throw new Error(
       'No video is open in this session. Call video_open with the path to a local video first.',
@@ -277,47 +328,51 @@ async function indexVideo(config, videoPath, signal) {
   if (info === undefined || !info.isFile()) throw new Error(`not a regular file: ${absolute}`)
 
   const digest = await sha256File(absolute)
+  if (digest === EXCLUDED_SHA256) throw new Error('This withdrawn source is unavailable.')
   const root = cacheRoot(config)
   // The cache key covers the sampling parameters, not just the bytes: a
   // degraded index must never be silently served as if it were a full scan.
   const fps = Number(config?.sampleFps) > 0 ? Number(config.sampleFps) : 5
   const limit = Number(config?.frameLimit) > 0 ? Number(config.frameLimit) : 0
-  const folder = join(root, `${digest.slice(0, 16)}-fps${fps}${limit > 0 ? `-cap${limit}` : ''}`)
+  const analysis = Boolean(config.integration !== false && config.semanticSearch !== false && config.semanticAssets)
+  const off = [...new Set(config.disabledDimensions ?? [])].sort()
+  if (off.some((x) => !/^D[1-6]$/.test(x))) throw new Error('disabledDimensions must be drawn from D1 through D6')
+  const folder = join(root, CACHE_VERSION, `${digest}-fps${fps}${limit > 0 ? `-cap${limit}` : ''}${analysis ? '-analysis' : ''}${off.length ? '-off' + off.join('') : ''}`)
   const manifestPath = join(folder, 'manifest.json')
-
-  if (existsSync(manifestPath)) {
+  const load = async () => {
     const manifest = await readJson(manifestPath)
-    if (manifest.video_sha256 !== digest) {
-      throw new Error(
-        `cached index at ${folder} belongs to different bytes; delete that folder to rebuild`,
-      )
-    }
-    // Same bytes, possibly a new path (a renamed or moved file). The manifest
-    // records where the frames were decoded from, so it must follow the file.
-    if (resolve(manifest.video_path) !== absolute) {
-      manifest.video_path = absolute
-      await writeFile(manifestPath, JSON.stringify(manifest, null, 1), 'utf8')
-    }
-    return {
-      manifest,
-      catalog: await readJson(manifest.catalog_path),
-      wave: await readJson(manifest.wave_path),
-      reused: true,
-    }
+    if (manifest.video_sha256 !== digest) throw new Error('Index contains a different source hash.')
+    return { manifest: { ...manifest, video_path: absolute }, catalog: await readJson(manifest.catalog_path),
+      wave: await readJson(manifest.wave_path) }
   }
-
-  await mkdir(folder, { recursive: true })
-  const argv = ['-B', '-X', 'utf8', INDEXER, '--video', absolute, '--out', folder]
-  if (Number.isFinite(fps) && fps > 0) argv.push('--fps', String(fps))
-  if (limit > 0) argv.push('--limit', String(limit))
-  await run(resolvePython(config), argv, signal, HERE)
-  const manifest = await readJson(manifestPath)
-  return {
-    manifest,
-    catalog: await readJson(manifest.catalog_path),
-    wave: await readJson(manifest.wave_path),
-    reused: false,
-  }
+  if (existsSync(manifestPath)) return { ...(await load()), reused: true }
+  const current = indexing.get(folder)
+  if (current) { await current; return { ...(await load()), reused: true } }
+  const build = (async () => {
+    await mkdir(dirname(folder), { recursive: true })
+    const stage = await mkdtemp(`${folder}-stage-`)
+    try {
+      const argv = ['-B', '-X', 'utf8', INDEXER, '--video', absolute, '--out', stage, '--fps', String(fps)]
+      if (limit > 0) argv.push('--limit', String(limit))
+      if (analysis) argv.push('--keep-analysis')
+      if (off.length) argv.push('--disable-dimensions', ...off)
+      await run(resolvePython(config), argv, signal, HERE, config.ffmpegPath)
+      const manifest = await readJson(join(stage, 'manifest.json'))
+      if (manifest.video_sha256 !== digest || await sha256File(absolute) !== digest) throw new Error('Video changed while importing.')
+      for (const field of ['catalog_path', 'wave_path', 'index_path', 'analysis_path']) {
+        if (manifest[field]) manifest[field] = join(folder, manifest[field].split(/[\\/]/).at(-1))
+      }
+      await writeFile(join(stage, 'manifest.json'), JSON.stringify(manifest, null, 1), 'utf8')
+      try { await rename(stage, folder) } catch (error) {
+        if (!existsSync(manifestPath)) throw error
+      }
+    } finally {
+      await rm(stage, { recursive: true, force: true })
+    }
+  })()
+  indexing.set(folder, build)
+  try { await build } finally { if (indexing.get(folder) === build) indexing.delete(folder) }
+  return { ...(await load()), reused: false }
 }
 
 /**
@@ -392,8 +447,29 @@ async function attachPng(ctx, buffer, displayName) {
   if (attachments === undefined) {
     throw new Error('no attachment service is mounted, so native frames cannot be delivered')
   }
-  const ref = await attachments.saveImage({ data: buffer, mediaType: 'image/png', name: displayName })
+  if (buffer.length < 33 || buffer.readUInt32BE(0) !== 0x89504e47) throw new Error('Expected native PNG data.')
+  // Keep PNG pixel data and structural chunks only, so the attachment store has
+  // no source metadata to normalize. Preserve both byte hashes in the ledger.
+  const parts = [buffer.subarray(0, 8)]
+  for (let offset = 8; offset < buffer.length;) {
+    const stop = offset + 12 + buffer.readUInt32BE(offset)
+    if (stop > buffer.length) throw new Error('Incomplete source PNG chunk.')
+    const tag = buffer.toString('ascii', offset + 4, offset + 8)
+    if (['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND'].includes(tag)) parts.push(buffer.subarray(offset, stop))
+    offset = stop
+  }
+  const payload = Buffer.concat(parts)
+  const expected = 'sha256:' + createHash('sha256').update(payload).digest('hex')
+  const ref = await attachments.saveImage({ data: payload, mediaType: 'image/png', name: displayName })
+  if (ref.attachmentId !== expected || ref.mediaType !== 'image/png' || ref.width !== buffer.readUInt32BE(16) || ref.height !== buffer.readUInt32BE(20)) {
+    throw new Error('DSH changed the PNG encoding or dimensions; original pixel delivery was not certified.')
+  }
   return ref
+}
+
+function ffprobeFor(config) {
+  const path = config?.ffmpegPath
+  return path ? join(dirname(path), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe') : 'ffprobe'
 }
 
 /** Every source frame time, so a requested second maps to one exact frame. */
@@ -401,10 +477,7 @@ async function sourceTimeline(binding, config, signal) {
   if (binding.timeline !== undefined) return binding.timeline
   // ffprobe sits beside ffmpeg; derive it from the configured ffmpeg path so the
   // plugin exposes one binary setting rather than two.
-  const ffmpeg = config?.ffmpegPath || ''
-  const ffprobe = ffmpeg.length > 0
-    ? join(dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
-    : 'ffprobe'
+  const ffprobe = ffprobeFor(config)
   const { stdout } = await run(ffprobe, [
     '-v', 'error', '-select_streams', 'v:0',
     '-show_entries', 'frame=pts,pts_time', '-of', 'json',
@@ -417,8 +490,8 @@ async function sourceTimeline(binding, config, signal) {
       pts: Number(frame.pts),
       seconds: Number(frame.pts_time),
     }))
-    .filter((entry) => Number.isFinite(entry.seconds))
-  if (entries.length === 0) throw new Error('ffprobe returned no source frame times')
+  if (entries.length === 0 || entries.some((entry, i) => !Number.isSafeInteger(entry.pts) || !Number.isFinite(entry.seconds)
+    || (i > 0 && entry.pts <= entries[i - 1].pts))) throw new Error('Source has missing or non-monotonic original PTS.')
   binding.timeline = entries
   return entries
 }
@@ -437,24 +510,35 @@ function nearestFrame(timeline, target) {
   return best
 }
 
+async function decodeFrame(binding, config, sourceFrame, target, signal) {
+  const ffmpeg = config?.ffmpegPath || 'ffmpeg'
+  // Select by frame index so the pixel comes from exactly the catalogued frame,
+  // rather than from a time guess that may land on a neighbour.
+  const filter = `select=eq(n\\,${sourceFrame}),format=rgb24`
+  await run(ffmpeg, [
+    '-v', 'error', '-xerror', '-noautorotate',
+    '-i', binding.manifest.video_path,
+    '-map', '0:v:0', '-vf', filter,
+    '-fps_mode', 'passthrough', '-frames:v', '1', '-y', target,
+  ], signal, dirname(target))
+  if (!existsSync(target)) {
+    throw new Error(`source frame ${sourceFrame} could not be decoded from the original video`)
+  }
+}
+
 /** Export one exact source frame at native resolution and cache the PNG. */
 async function nativeFrame(binding, config, row, signal) {
   const folder = join(dirname(binding.manifest.catalog_path), 'native')
   const target = join(folder, `frame_${row.source_frame}.png`)
   if (existsSync(target)) return target
   await mkdir(folder, { recursive: true })
-  const ffmpeg = config?.ffmpegPath || 'ffmpeg'
-  // Select by frame index so the pixel comes from exactly the catalogued frame,
-  // rather than from a time guess that may land on a neighbour.
-  const filter = `select=eq(n\\,${row.source_frame})`
-  await run(ffmpeg, [
-    '-v', 'error', '-noautorotate',
-    '-i', binding.manifest.video_path,
-    '-vf', filter,
-    '-fps_mode', 'passthrough', '-frames:v', '1', '-y', target,
-  ], signal, folder)
-  if (!existsSync(target)) {
-    throw new Error(`source frame ${row.source_frame} could not be decoded from the original video`)
+  const temporary = join(folder, `${randomUUID()}.png`)
+  try {
+    await decodeFrame(binding, config, row.source_frame, temporary, signal)
+    await assertSource(binding)
+    try { await rename(temporary, target) } catch (error) { if (!existsSync(target)) throw error }
+  } finally {
+    await rm(temporary, { force: true })
   }
   return target
 }
@@ -504,7 +588,19 @@ const imageArraySchema = {
 }
 
 export function apply(ctx, config = {}) {
-  ctx.effect(() => () => bindings.clear())
+  installExtensions(ctx, config, {
+    bindingFor, selection, assertSource, evidence: listEvidence,
+    imageArraySchema, imageBlock, attach: (bytes, name) => attachPng(ctx, bytes, name),
+    assertImageRoute: (exec) => assertImageCapableRoute(ctx, exec),
+    ffprobe: ffprobeFor(config), ffmpeg: config.ffmpegPath || 'ffmpeg',
+    timeline: (binding, signal) => sourceTimeline(binding, config, signal),
+    native: (binding, frame, signal) => nativeFrame(binding, config, frame, signal),
+    decode: (binding, frame, target, signal) => decodeFrame(binding, config, frame, target, signal),
+    async worker(operation, request, signal) {
+      const { stdout } = await run(resolvePython(config), ['-B', '-X', 'utf8', EVIDENCE_WORKER, operation, request], signal, HERE, config.ffmpegPath)
+      return JSON.parse(stdout)
+    },
+  })
 
   // Archive on every plugin load. Cheap (content-hash deduplicated) and it means
   // an experiment's evidence survives an accidental delete of the live folder.
@@ -584,7 +680,7 @@ export function apply(ctx, config = {}) {
         sampling: manifest.sampling,
         reused_index: reused,
       })
-      bindings.set(agentId, {
+      activeBindings.set(exec.agent.session, {
         manifest,
         catalog,
         wave,
@@ -1287,6 +1383,7 @@ export function apply(ctx, config = {}) {
     async execute(args, exec) {
       const binding = bindingFor(exec)
       const sessionId = exec.agent?.id
+      await assertSource(binding)
       const reason = String(args?.reason ?? '').trim()
       if (reason.length < 8) {
         throw new Error('state the observable need for these frames, not just a tool request')
@@ -1447,6 +1544,12 @@ export function apply(ctx, config = {}) {
         )
       }
 
+      for (const [i, frame] of delivered.entries()) {
+        frame.attachment_sha256 = images[i].attachmentId.slice('sha256:'.length)
+        frame.time_base = binding.manifest.time_base
+        frame.presentation = 'native_rgb_png'
+      }
+      await assertSource(binding)
       const envelope = `Delivered ${images.length} original frame(s) at native `
         + `${binding.manifest.probe.width}x${binding.manifest.probe.height} `
         + `from source ${binding.manifest.video_sha256.slice(0, 16)}.\n`
@@ -1491,7 +1594,13 @@ export function apply(ctx, config = {}) {
       properties: {
         start: { type: 'number', description: 'Interval start in source seconds.' },
         end: { type: 'number', description: 'Interval end in source seconds; must be after start.' },
-        count: { type: 'integer', description: 'Frames to return, 1 to 8. Defaults to 4.' },
+        count: { type: 'integer', description: config.integration !== false && config.denseResample !== false
+          ? 'Number of evenly spaced requests, paginated as needed. Defaults to 4.' : 'Frames to return, 1 to 8. Defaults to 4.' },
+        ...(config.integration !== false && config.denseResample !== false ? {
+          fps: { type: 'number', description: 'Requested sampling density in frames per second. Mutually exclusive with count.' },
+          cursor: { type: 'integer', description: 'Use the returned next_cursor for the same range and sampling inputs.' },
+          page_size: { type: 'integer', description: 'Transport page width of 1–8 originals. No cumulative limit.' },
+        } : {}),
         reason: { type: 'string', description: 'What this resample is meant to establish.' },
       },
       required: ['start', 'end', 'reason'],
@@ -1514,6 +1623,7 @@ export function apply(ctx, config = {}) {
     },
     async execute(args, exec) {
       const binding = bindingFor(exec)
+      await assertSource(binding)
       const reason = String(args?.reason ?? '').trim()
       if (reason.length < 8) throw new Error('state what this resample is meant to establish')
       const sessionId = exec.agent?.id
@@ -1525,59 +1635,74 @@ export function apply(ctx, config = {}) {
       }
       const { lo, hi } = selection(binding, args.start, args.end)
       if (!(hi > lo)) throw new Error('end must be greater than start inside the video')
-      const count = Math.max(1, Math.min(8, args?.count ?? 4))
-
-      const times = Array.from({ length: count }, (_, index) => (
-        count === 1 ? (lo + hi) / 2 : lo + ((hi - lo) * index) / (count - 1)
-      ))
-      // Resolve each requested second to one exact source frame first, so the
-      // delivered PTS is recorded rather than a seek guess.
       const timeline = await sourceTimeline(binding, config, exec.signal)
-      const chosen = times.map((time) => nearestFrame(timeline, time))
-
-      const folder = join(dirname(binding.manifest.catalog_path), 'resample')
-      await mkdir(folder, { recursive: true })
-      const ffmpeg = config?.ffmpegPath || 'ffmpeg'
+      const extended = config.integration !== false && config.denseResample !== false
+      const cursor = extended ? args.cursor ?? 0 : 0
+      if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error('cursor must be a nonnegative integer.')
+      const pageSize = extended ? Math.max(1, Math.min(8, args.page_size ?? 8)) : 8
+      const inRange = timeline.filter((f) => lo <= f.seconds && f.seconds <= hi)
+      const requestedRate = extended ? args.fps : undefined
+      let chosen, total
+      if (requestedRate !== undefined) {
+        if (!Number.isFinite(requestedRate) || requestedRate <= 0 || args.count !== undefined) throw new Error('Use a positive fps or count, not both.')
+        const interval = 1 / requestedRate
+        let tick = lo
+        const distinct = []
+        for (const frame of inRange) {
+          if (frame.seconds + 1e-9 < tick) continue
+          distinct.push({ frame, requested: tick })
+          tick = lo + (Math.floor((frame.seconds - lo + 1e-9) / interval) + 1) * interval
+        }
+        total = distinct.length
+        chosen = distinct.slice(cursor, cursor + pageSize)
+      } else {
+        const count = extended ? args.count ?? 4 : Math.max(1, Math.min(8, args.count ?? 4))
+        if (!Number.isSafeInteger(count) || count < 1) throw new Error('count must be a positive safe integer.')
+        total = inRange.length ? count : 0
+        chosen = Array.from({ length: Math.max(0, Math.min(pageSize, total - cursor)) }, (_, i) => {
+          const requested = count === 1 ? (lo + hi) / 2 : lo + (hi - lo) * (cursor + i) / (count - 1)
+          return { requested, frame: nearestFrame(inRange, requested) }
+        })
+      }
+      const nextCursor = cursor + chosen.length < total && chosen.length ? cursor + chosen.length : null
 
       const images = []
       const lines = []
       const delivered = []
-      for (let index = 0; index < chosen.length; index += 1) {
-        const frame = chosen[index]
-        const target = join(folder, `f_${frame.index}.png`)
-        if (!existsSync(target)) {
-          await run(ffmpeg, [
-            '-v', 'error', '-noautorotate',
-            '-i', binding.manifest.video_path,
-            '-vf', `select=eq(n\\,${frame.index})`,
-            '-fps_mode', 'passthrough', '-frames:v', '1', '-y', target,
-          ], exec.signal, folder)
-        }
+      const nominated = new Set(binding.manifest.pool.filter((r) => r.in_catalog).map((r) => r.pts))
+      for (const { frame, requested } of chosen) {
+        const target = await nativeFrame(binding, config, { source_frame: frame.index }, exec.signal)
         const buffer = await readFile(target)
         const ref = await attachPng(ctx, buffer, `resample_${frame.seconds.toFixed(3)}.png`)
         images.push(ref)
         const frameHash = createHash('sha256').update(buffer).digest('hex')
         delivered.push({
           evidence_id: evidenceId(sessionId, binding, { pts: frame.pts, png_sha256: frameHash }),
-          requested_seconds: seconds(times[index]),
+          requested_seconds: requested,
           source_frame: frame.index,
           pts: frame.pts,
-          seconds: seconds(frame.seconds),
+          seconds: frame.seconds,
+          time_base: binding.manifest.time_base,
+          in_catalog: nominated.has(frame.pts),
           png_sha256: frameHash,
+          attachment_sha256: ref.attachmentId.slice('sha256:'.length),
+          presentation: 'native_rgb_png',
         })
         lines.push(
           `${images.length}. ${seconds(frame.seconds)}s pts=${frame.pts} `
           + `source_frame=${frame.index} ${ref.width}x${ref.height} `
           + `evidence_id=${delivered[delivered.length - 1].evidence_id} `
-          + `(requested ${seconds(times[index])}s)`,
+          + `(requested ${seconds(requested)}s)`,
         )
       }
 
       const envelope = `Resampled ${seconds(lo)}-${seconds(hi)}s of the original video: `
         + `${images.length} frame(s) at ${binding.manifest.probe.width}x`
         + `${binding.manifest.probe.height}.\n${lines.join('\n')}\nPurpose: ${reason}\n`
+        + `Result page ${cursor} of ${total}; next_cursor=${nextCursor ?? 'none'}. `
         + 'Each line gives the exact source frame delivered and the second that was requested; '
         + 'the interval between returned frames was not observed.'
+      await assertSource(binding)
       await binding.ledger.append({
         at: new Date().toISOString(),
         event: 'source_resample',
@@ -1586,6 +1711,7 @@ export function apply(ctx, config = {}) {
         reason,
         goal: binding.goal,
         range: [lo, hi],
+        resample: { requested_fps: requestedRate ?? null, requested_count: args.count ?? null, cursor, page_size: pageSize, total, next_cursor: nextCursor },
         frames: delivered,
         delivered: images.length,
         images_delivered: images.length,

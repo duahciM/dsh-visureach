@@ -5,60 +5,71 @@ from the video file itself. Nothing here reads historical experiment batches.
 """
 import argparse
 import json
+from shutil import copyfile
 import sys
 from collections import defaultdict
-from hashlib import sha256
-from math import ceil
 from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import numpy as np
+from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "vendor" / "P2_24"))
 
-from v05.engine import load_source  # noqa: E402
+from v05.engine import CFG as SOURCE_CONFIG, select_expression  # noqa: E402
 from if16_research.common import frame_key, sequence  # noqa: E402
 from if16_research.nominate import nominate  # noqa: E402
 from if16_research.select import merge  # noqa: E402
 from if17_research.catalog import build_catalog  # noqa: E402
-from vendor.common import probe_video  # noqa: E402
+from p1.io import command, read_video  # noqa: E402
 
 import navigation as wave_module
 
 
-def probe_duration(path):
-    """Ask ffprobe for the real duration so the frame budget follows the video."""
-    info = probe_video(Path(path))
-    if info.get("duration_s"):
-        return float(info["duration_s"])
-    raise SystemExit(f"cannot determine duration of {path}")
-
-
-def file_sha(path):
-    h = sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def windowed_nominations(frames, source, window_seconds):
+def windowed_nominations(frames, source, window_seconds, disabled=()):
     """Run the unchanged nominator per time window, keyed by original frame."""
-    end = ceil(source["end"])
-    starts = range(0, max(end, 1), window_seconds)
-    windows = [[f for f in frames if a <= f["t"] < a + window_seconds] for a in starts]
+    windows = defaultdict(list)
+    for frame in frames:
+        windows[int(frame["t"] // window_seconds)].append(frame)
     positions = {frame_key(source, row): i for i, row in enumerate(frames)}
     combined = defaultdict(list)
     produced = 0
-    for index, window in enumerate(windows):
-        if not window:
-            continue
+    for index, window in windows.items():
         produced += 1
-        channels, _, _ = nominate(sequence(window), source)
+        channels, _, _ = nominate(sequence(window), source, disabled=disabled)
         for key, items in channels.items():
             combined[key].extend(
                 row | {"sample": positions[row["frame_id"]], "analysis_window": index}
                 for row in items
             )
     return combined, produced
+
+
+def scan_source(video, folder, fps, explicit_limit):
+    """Reuse the exact source reader without the research adapter's 5,000-frame ceiling."""
+    frames, source = read_video(video, fps=fps, width=SOURCE_CONFIG["width"], max_frames=sys.maxsize)
+    if explicit_limit > 0 and len(frames) > explicit_limit:
+        indices = sorted(set(np.linspace(0, len(frames) - 1, explicit_limit).round().astype(int)))
+        frames = [frames[index] for index in indices]
+        source["sampling_downgrade"] = f"uniformly bounded to {explicit_limit} candidates"
+    height, width = frames[0]["gray"].shape
+    with TemporaryDirectory(prefix="observer_rgb_") as scratch:
+        expression = Path(scratch) / "select.txt"
+        filtergraph = f"select='{select_expression([f['source_frame'] for f in frames])}',scale={width}:{height},format=rgb24"
+        expression.write_text(filtergraph, encoding="ascii")
+        raw = command(["ffmpeg", "-v", "error", "-xerror", "-noautorotate", "-i", video, "-map", "0:v:0",
+                       "-/filter:v", expression, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+    if len(raw) != len(frames) * height * width * 3:
+        raise ValueError("RGB/source-PTS join mismatch")
+    rgb = np.frombuffer(raw, np.uint8).reshape(len(frames), height, width, 3)
+    folder.mkdir(parents=True, exist_ok=True)
+    for i, (frame, pixels) in enumerate(zip(frames, rgb)):
+        path = folder / f"{i:04d}.png"
+        Image.fromarray(pixels).save(path)
+        frame.update(sample=i, time_base=source["time_base"], image=str(path.resolve()))
+    source["sampled_frame_count"] = len(frames)
+    return frames, source
 
 
 def main():
@@ -72,6 +83,8 @@ def main():
     parser.add_argument("--limit", type=int, default=0,
                         help="0 = no cap. A positive value only bounds pair work and is always reported.")
     parser.add_argument("--window-seconds", type=int, default=30)
+    parser.add_argument("--keep-analysis", action="store_true")
+    parser.add_argument("--disable-dimensions", nargs="*", choices=[f"D{i}" for i in range(1, 7)], default=[])
     args = parser.parse_args()
 
     video = Path(args.video).resolve()
@@ -80,14 +93,10 @@ def main():
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
 
-    # Probe the real duration first so the frame budget follows the video
-    # instead of a constant that silently thins long clips.
-    duration = probe_duration(video)
-    implied = max(1, int(duration * args.fps) + 2)
-    limit = args.limit if args.limit > 0 else implied + 1
-
-    frames, source = load_source(str(video), out / "pool", fps=args.fps, limit=limit)
-    combined, window_count = windowed_nominations(frames, source, args.window_seconds)
+    if args.window_seconds < 1 or args.fps <= 0:
+        raise ValueError("Window seconds and sampling rate must be positive")
+    frames, source = scan_source(video, out / "pool", args.fps, args.limit)
+    combined, window_count = windowed_nominations(frames, source, args.window_seconds, args.disable_dimensions)
     library = merge(frames, source, combined)
 
     # Native pixels are produced on demand at read time, so the catalogue keeps
@@ -116,6 +125,13 @@ def main():
     # Index the full sampled pool so the agent can tell "sampled but not nominated"
     # apart from "never sampled" — a distinction the delivery contract requires.
     nominated = {row["frame_id"] for row in catalog}
+    analysis = None
+    if args.keep_analysis:
+        analysis = out / "analysis"
+        analysis.mkdir(exist_ok=True)
+        for frame in frames:
+            if frame_key(source, frame) in nominated:
+                copyfile(frame["image"], analysis / f'{frame["source_frame"]}.png')
     pool = [
         {
             "frame_id": frame_key(source, f),
@@ -149,7 +165,7 @@ def main():
         "sampling": {
             "fps": args.fps,
             "configured_limit": args.limit,
-            "applied_limit": limit,
+            "applied_limit": args.limit or None,
             "frame_interval_seconds": 1.0 / args.fps,
             "downgrade": source.get("sampling_downgrade"),
             "note": "Every frame implied by this rate is indexed unless downgrade is not None.",
@@ -163,6 +179,8 @@ def main():
             "unknown_intervals": len(wave["unknown_intervals"]),
         },
         "index_path": str(out / "index.json"),
+        "analysis_path": str(analysis) if analysis else None,
+        "disabled_dimensions": args.disable_dimensions,
     }
     (out / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
