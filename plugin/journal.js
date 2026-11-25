@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { withProcessLock } from './process_lock.js'
 
 const queues = new Map()
 const fingerprint = (row) => createHash('sha256').update(JSON.stringify(row)).digest('hex')
@@ -63,12 +64,12 @@ async function reset(path, raw, rows) {
   await rename(temporary, path)
 }
 
-export function journal(cache, base) {
+export function journal(cache, base, lockProcesses = true) {
   const name = base.file.split(/[\\/]/).at(-1)
   const replica = join(cache, 'active-journal-v3', name)
   function serial(run) {
     const prev = queues.get(base.file) ?? Promise.resolve()
-    const next = prev.catch(() => {}).then(run)
+    const next = prev.catch(() => {}).then(() => lockProcesses ? withProcessLock(cache, name, run) : run())
     queues.set(base.file, next)
     return next.finally(() => { if (queues.get(base.file) === next) queues.delete(base.file) })
   }
@@ -85,9 +86,10 @@ export function journal(cache, base) {
   return {
     file: base.file, replica,
     async read() { return serial(async () => (await recover()).slice()) },
-    async append(record) {
+    async append(record, validate) {
       return serial(async () => {
         const rows = await recover()
+        if (validate) validate(rows)
         const state = { ...record, journal_id: randomUUID(), journal_seq: (rows.at(-1)?.journal_seq ?? 0) + 1 }
         await durableAppend(replica, state)
         await durableAppend(base.file, state)

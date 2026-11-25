@@ -197,13 +197,16 @@ def crop(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=("pair", "semantic", "ocr", "text", "crop", "research"))
+    parser.add_argument("operation", choices=("pair", "semantic", "ocr", "text", "crop", "research", "local_observation"))
     parser.add_argument("request", type=Path)
     args = parser.parse_args()
     request = json.loads(args.request.read_text(encoding="utf-8"))
     if args.operation == "research":
         from research_bridge import research
         fn = research
+    elif args.operation == "local_observation":
+        from local_observation import inspect
+        fn = inspect
     else:
         fn = {"pair": inspect_pair, "semantic": semantic, "ocr": ocr, "text": get_text_track, "crop": crop}[args.operation]
     try:

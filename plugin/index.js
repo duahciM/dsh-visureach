@@ -20,12 +20,13 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { installExtensions } from './integration.js'
 import { journal } from './journal.js'
+import { processLocksAvailable, withProcessLock } from './process_lock.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const INDEXER = join(HERE, 'python', 'index_video.py')
 const EVIDENCE_WORKER = join(HERE, 'python', 'evidence.py')
 const EXCLUDED_SHA256 = '7f74580c0426420011267f3ad0c68bfa8a53c91b2ae74fa168912a72d4a201cf'
-const CACHE_VERSION = 'observer-index-v3'
+const CACHE_VERSION = 'observer-index-v4'
 const indexing = new Map()
 const archiveQueue = new Map()
 
@@ -182,6 +183,7 @@ function listEvidence(records, videoSha) {
         seconds: frame.seconds,
         pts: frame.pts,
         source_frame: frame.source_frame,
+        time_base: frame.time_base,
         png_sha256: frame.png_sha256,
         via: record.event,
         task_id: record.task_id,
@@ -544,6 +546,36 @@ async function nativeFrame(binding, config, row, signal) {
   return target
 }
 
+async function nativeBatch(binding, config, rows, signal) {
+  const folder = join(dirname(binding.manifest.catalog_path), 'native')
+  const targets = rows.map(({ source_frame }) => join(folder, `frame_${source_frame}.png`))
+  const missing = [...new Set(rows.filter((_, i) => !existsSync(targets[i])).map((r) => r.source_frame))].sort((a, b) => a - b)
+  if (!missing.length) return targets
+  if (missing.length === 1 || config.batchSourceDecode === false) {
+    return Promise.all(rows.map((row) => nativeFrame(binding, config, row, signal)))
+  }
+  await mkdir(folder, { recursive: true })
+  const stage = await mkdtemp(join(folder, 'batch-'))
+  try {
+    // Select exact decode indices in one forward pass; checks compare against
+    // the existing exact single-frame decoder. Filenames use emission order.
+    const filter = missing.map((i) => `eq(n\\,${i})`).join('+')
+    await run(config.ffmpegPath || 'ffmpeg', ['-v', 'error', '-xerror', '-noautorotate', '-i', binding.manifest.video_path,
+      '-map', '0:v:0', '-vf', `select=${filter},format=rgb24`, '-fps_mode', 'passthrough', '-start_number', '0',
+      '-frames:v', String(missing.length), join(stage, '%d.png')], signal, stage)
+    await assertSource(binding)
+    const images = await readdir(stage)
+    if (images.length !== missing.length || missing.some((_, i) => !images.includes(`${i}.png`))) throw new Error('Source batch decode emitted a different number of frames.')
+    for (const [i, index] of missing.entries()) {
+      const target = join(folder, `frame_${index}.png`)
+      try { await rename(join(stage, `${i}.png`), target) } catch (error) { if (!existsSync(target)) throw error }
+    }
+    return targets
+  } finally {
+    await rm(stage, { recursive: true, force: true })
+  }
+}
+
 const imageBlock = (ref) => ({
   type: 'image',
   attachment: {
@@ -591,7 +623,7 @@ const imageArraySchema = {
 export function apply(ctx, config = {}) {
   ctx.effect(() => {
     const folder = join(cacheRoot(config), 'runtime-loads')
-    const marker = { version: '0.3.0', entry: fileURLToPath(import.meta.url), pid: process.pid,
+    const marker = { version: '0.4.0', entry: fileURLToPath(import.meta.url), pid: process.pid, processLocksAvailable,
       executable: process.execPath, electron: process.versions.electron ?? null, at: new Date().toISOString() }
     mkdir(folder, { recursive: true }).then(() => writeFile(join(folder, `${randomUUID()}.json`), JSON.stringify(marker), { flag: 'wx' })).catch(() => undefined)
     return () => {}
@@ -603,6 +635,7 @@ export function apply(ctx, config = {}) {
     ffprobe: ffprobeFor(config), ffmpeg: config.ffmpegPath || 'ffmpeg',
     timeline: (binding, signal) => sourceTimeline(binding, config, signal),
     native: (binding, frame, signal) => nativeFrame(binding, config, frame, signal),
+    nativeBatch: (binding, frames, signal) => nativeBatch(binding, config, frames, signal),
     decode: (binding, frame, target, signal) => decodeFrame(binding, config, frame, target, signal),
     async worker(operation, request, signal) {
       const { stdout } = await run(resolvePython(config), ['-B', '-X', 'utf8', EVIDENCE_WORKER, operation, request], signal, HERE, config.ffmpegPath)
@@ -614,7 +647,10 @@ export function apply(ctx, config = {}) {
   // an experiment's evidence survives an accidental delete of the live folder.
   ctx.effect(() => {
     let cancelled = false
-    archiveLedgers(cacheRoot(config), 'plugin-load').catch(() => undefined)
+    const root = cacheRoot(config)
+    const archive = () => archiveLedgers(root, 'plugin-load')
+    const action = config.processLocks === false || !processLocksAvailable ? archive() : withProcessLock(root, 'archive-index', archive)
+    action.catch(() => undefined)
     return () => { cancelled = true; void cancelled }
   })
 
@@ -670,10 +706,10 @@ export function apply(ctx, config = {}) {
       const agentId = exec.agent?.id
       const root = cacheRoot(config)
       const legacy = ledger(root, agentId)
-      const sessionLedger = config.activeJournal === false ? legacy : journal(root, legacy)
+      const sessionLedger = config.activeJournal === false ? legacy : journal(root, legacy, config.processLocks !== false)
       // Archive whatever the previous sessions wrote before this one appends.
-      await archiveLedgers(cacheRoot(config), `before-video-open:${manifest.video_sha256.slice(0, 8)}`)
-        .catch(() => undefined)
+      const archive = () => archiveLedgers(root, `before-video-open:${manifest.video_sha256.slice(0, 8)}`)
+      await (config.processLocks === false || !processLocksAvailable ? archive() : withProcessLock(root, 'archive-index', archive, exec.signal)).catch(() => undefined)
       // Reopening a video restores its most recent task, so continuing the same
       // observation does not ask again. A *new* purpose still opens a new task.
       const history = await sessionLedger.read()
@@ -1680,8 +1716,9 @@ export function apply(ctx, config = {}) {
       const lines = []
       const delivered = []
       const nominated = new Set(binding.manifest.pool.filter((r) => r.in_catalog).map((r) => r.pts))
-      for (const { frame, requested } of chosen) {
-        const target = await nativeFrame(binding, config, { source_frame: frame.index }, exec.signal)
+      const targets = await nativeBatch(binding, config, chosen.map(({ frame }) => ({ source_frame: frame.index })), exec.signal)
+      for (const [i, { frame, requested }] of chosen.entries()) {
+        const target = targets[i]
         const buffer = await readFile(target)
         const ref = await attachPng(ctx, buffer, `resample_${frame.seconds.toFixed(3)}.png`)
         images.push(ref)

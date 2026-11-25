@@ -1,0 +1,12 @@
+{
+  "patch_half_width": 30,
+  "patch_half_height": 24,
+  "patch_seeds": 12,
+  "min_inside": 3,
+  "min_outside_train": 8,
+  "min_outside_held": 3,
+  "held_every": 4,
+  "median_px": 3,
+  "p90_px": 5,
+  "minimum_gap_s": 1.1
+}

@@ -3,6 +3,8 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { saveResult, loadResult, resultPage, reference } from './proof.js'
+import { installObservationTools, validateRevisionDependencies } from './observation_tools.js'
+import { installNavigationLinks } from './navigation_links.js'
 
 const text = { type: 'string' }
 const number = { type: 'number' }
@@ -14,7 +16,7 @@ const range = { start: number, end: number, cursor: integer, page_size: integer 
 function page(items, args) {
   const start = Math.max(0, args.cursor ?? 0)
   const count = Math.min(40, Math.max(1, args.page_size ?? 12))
-  return { items: items.slice(start, start + count), total: items.length,
+  return { items: items.slice(start, start + count), cursor: start, total: items.length,
     next_cursor: start + count < items.length ? start + count : null }
 }
 
@@ -61,6 +63,13 @@ function preview(value) {
       return select
     })
     summary.returned_in_full_result = value.items.length
+    if (Number.isSafeInteger(value.cursor) && value.items.length > summary.items.length) summary.next_cursor = value.cursor + summary.items.length
+  }
+  if (value.rows?.length && value.prototypes) {
+    summary.rows = value.rows.slice(0, 4).map(({ sample, comparisons }) => ({ sample, comparisons: comparisons.map((r) => ({
+      source_root: r.source_root, reference_index: r.reference_index, local: r.local.state, excluded_context: r.excluded_context.state,
+      residual: r.residual, explanations: r.explanations })) }))
+    summary.source_originals = { count: value.source_originals.length }
   }
   return summary
 }
@@ -84,6 +93,8 @@ export function installExtensions(ctx, config, backend) {
               : name === 'video_text_search' && value.status === 'completed' ? value.channel : 'computed'
             const full = await saveResult(binding, kind, value)
             value.result_ref = full
+            receipt.result_ref = full
+            receipt.result_channel = kind
             if (name === 'video_text_search' && ['completed', 'unavailable'].includes(value.status)) {
               value.track_ref = await saveResult(binding, 'track_metadata', { channel: value.channel, present: value.status === 'completed', stream: value.stream, reason: value.reason })
             }
@@ -304,7 +315,7 @@ export function installExtensions(ctx, config, backend) {
     { action: { type: 'string', enum: ['list', 'create', 'revise'] }, observation_id: text, supersedes_revision: text, content: text,
       kind: { type: 'string', enum: ['direct', 'inference', 'unknown', 'withdrawn'] }, evidence_ids: list(text),
       claim_scope: { type: 'string', enum: ['visual', 'visual_region', 'ocr_text', 'transcribed_audio', 'subtitle_text', 'stream_metadata', 'measurement', 'external_statement'] },
-      reason: text, cursor: integer, page_size: integer }, ['action'], async (b, a) => {
+      reason: text, depends_on_revisions: list(text), cursor: integer, page_size: integer }, ['action'], async (b, a) => {
       const key = b.ledger.file
       const previous = proofLocks.get(key) ?? Promise.resolve()
       const next = previous.catch(() => undefined).then(async () => {
@@ -326,8 +337,13 @@ export function installExtensions(ctx, config, backend) {
         const entry = { event: 'observation_revision', observation_id: a.action === 'revise' ? old.observation_id : randomUUID(),
           revision_id: randomUUID(), supersedes_revision: a.action === 'revise' ? old.revision_id : null,
           kind: a.kind, content: a.content, claim_scope, evidence_ids: citations, evidence_refs: refs, reason: a.reason ?? null, task_id: b.taskId,
+          depends_on_revisions: validateRevisionDependencies(history, a.depends_on_revisions ?? old?.depends_on_revisions ?? []),
           video_sha256: b.manifest.video_sha256, at: new Date().toISOString() }
-        await b.ledger.append(entry)
+        await b.ledger.append(entry, (current) => {
+          if (a.action !== 'revise') return
+          const newest = current.findLast((r) => r.event === 'observation_revision' && r.video_sha256 === entry.video_sha256 && r.observation_id === entry.observation_id)
+          if (newest?.revision_id !== a.supersedes_revision) throw new Error('The observation was revised concurrently. Read its latest revision before proceeding.')
+        })
         return entry
       })
       proofLocks.set(key, next)
@@ -426,4 +442,6 @@ export function installExtensions(ctx, config, backend) {
       await b.ledger.append(row)
       return row
     })
+  installObservationTools(tool, config, { backend, checkRefs, exact, compute, page })
+  installNavigationLinks(tool, config, { backend, page, loadResult })
 }

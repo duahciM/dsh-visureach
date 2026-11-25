@@ -6,10 +6,11 @@ from the video file itself. Nothing here reads historical experiment batches.
 import argparse
 import json
 from shutil import copyfile
+from subprocess import Popen, PIPE
 import sys
 from collections import defaultdict
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, TemporaryFile
 
 import numpy as np
 from PIL import Image
@@ -54,20 +55,32 @@ def scan_source(video, folder, fps, explicit_limit):
         frames = [frames[index] for index in indices]
         source["sampling_downgrade"] = f"uniformly bounded to {explicit_limit} candidates"
     height, width = frames[0]["gray"].shape
+    folder.mkdir(parents=True, exist_ok=True)
+    frame_bytes = height * width * 3
     with TemporaryDirectory(prefix="observer_rgb_") as scratch:
         expression = Path(scratch) / "select.txt"
         filtergraph = f"select='{select_expression([f['source_frame'] for f in frames])}',scale={width}:{height},format=rgb24"
         expression.write_text(filtergraph, encoding="ascii")
-        raw = command(["ffmpeg", "-v", "error", "-xerror", "-noautorotate", "-i", video, "-map", "0:v:0",
-                       "-/filter:v", expression, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
-    if len(raw) != len(frames) * height * width * 3:
-        raise ValueError("RGB/source-PTS join mismatch")
-    rgb = np.frombuffer(raw, np.uint8).reshape(len(frames), height, width, 3)
-    folder.mkdir(parents=True, exist_ok=True)
-    for i, (frame, pixels) in enumerate(zip(frames, rgb)):
-        path = folder / f"{i:04d}.png"
-        Image.fromarray(pixels).save(path)
-        frame.update(sample=i, time_base=source["time_base"], image=str(path.resolve()))
+        argv = ["ffmpeg", "-v", "error", "-xerror", "-noautorotate", "-i", video, "-map", "0:v:0",
+                "-/filter:v", str(expression), "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+        with TemporaryFile() as errors, Popen(argv, stdout=PIPE, stderr=errors) as decoder:
+            try:
+                for i, frame in enumerate(frames):
+                    pixels = decoder.stdout.read(frame_bytes)
+                    if len(pixels) != frame_bytes:
+                        raise ValueError(f"RGB/source-PTS join mismatch at sampled frame {i}")
+                    path = folder / f"{i:04d}.png"
+                    Image.frombytes("RGB", (width, height), pixels).save(path)
+                    frame.update(sample=i, time_base=source["time_base"], image=str(path.resolve()))
+                if decoder.stdout.read(1) or decoder.wait():
+                    raise ValueError("RGB/source-PTS join mismatch after the final frame")
+            except Exception:
+                if decoder.poll() is None:
+                    decoder.kill()
+                decoder.wait()
+                errors.seek(0)
+                print(errors.read().decode("utf-8", errors="replace"), file=sys.stderr)
+                raise
     source["sampled_frame_count"] = len(frames)
     return frames, source
 
