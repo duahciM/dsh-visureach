@@ -154,8 +154,32 @@ export function installExtensions(ctx, config, backend) {
   }
 
   if (config.researchNavigation !== false) {
-    tool('relation_figure2', 'Inspect the P2-23 graph at a catalogue PTS, including measured image-region pairs and degree. Full graphs are stored for evidence_detail.',
-      { pts: integer }, ['pts'], (b, a, exec) => research(b, { action: 'figure2', pts: a.pts }, exec))
+    tool('relation_figure2', 'Inspect Figure 1 region information and Figure 2 measured image-plane relationships. Catalogue PTS use the stored graph. At a reread PTS, use an original evidence receipt and optionally supply comparison PTS or native regions.',
+      { pts: integer, incremental: {type: 'boolean'}, context_pts: list(integer), regions_native: list(box) }, ['pts'], async (b, a, exec) => {
+        if (!a.incremental && !a.regions_native?.length && !a.context_pts?.length && b.catalog.frames.some((r) => r.pts === a.pts)) {
+          return research(b, { action: 'figure2', pts: a.pts }, exec)
+        }
+        const seen = backend.evidence(await b.ledger.read(), b.manifest.video_sha256)
+        const original = seen.find((r) => r.pts === a.pts)
+        if (!original) return { status: 'original_required', next_tool: 'delivery_request', suggested_arguments: { pts: [a.pts], reason: 'Read this exact source frame for a local relation graph.' }, scope: 'Incremental graph material must already have an original receipt.' }
+        const regions = a.regions_native ?? []
+        const { width, height } = b.manifest.probe
+        if (regions.some((r) => r.length !== 4 || !r.every(Number.isSafeInteger) || r[0] < 0 || r[1] < 0 || r[2] < 1 || r[3] < 1 || r[0]+r[2] > width || r[1]+r[3] > height)) {
+          return { status: 'invalid_parameters', code: 'NATIVE_ROI_REQUIRED', message: `Use x,y,width,height in the ${width}x${height} original.` }
+        }
+        const local = seen.filter((r) => r.pts !== a.pts).sort((x, y) => Math.abs(a.pts - x.pts) - Math.abs(a.pts - y.pts)).slice(0, 4).map((r) => r.pts)
+        const frames = await Promise.all([...new Set([a.pts, ...(a.context_pts ?? local)])].map((p) => exact(b, exec, p)))
+        const paths = await backend.nativeBatch(b, frames, exec.signal)
+        for (let i = 0; i < frames.length; i++) {
+          frames[i].path = paths[i]
+          frames[i].png_sha256 = digest(await readFile(paths[i]))
+        }
+        const target = frames.find((r) => r.pts === a.pts)
+        if (target.png_sha256 !== original.png_sha256) throw new Error('Exact original no longer matches the delivered receipt.')
+        const roi_roots = regions.map((r) => `ROI:${original.evidence_id}:${r.join(',')}`)
+        return compute(b, exec, 'research', { action: 'incremental_figure', pts: a.pts, source: b.catalog.source, frames,
+          regions_native: regions, roi_roots, evidence_id: original.evidence_id, disabled: b.manifest.disabled_dimensions })
+      })
     tool('change_triggers', 'Find source-linked change prompts from the P2-17 comparison chain. Shows investigated time brackets and abstentions without delivering images.',
       range, [], async (b, a, exec) => {
         const { lo, hi } = backend.selection(b, a.start, a.end)

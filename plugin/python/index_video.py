@@ -6,83 +6,21 @@ from the video file itself. Nothing here reads historical experiment batches.
 import argparse
 import json
 from shutil import copyfile
-from subprocess import Popen, PIPE
 import sys
 from collections import defaultdict
 from pathlib import Path
-from tempfile import TemporaryDirectory, TemporaryFile
 
-import numpy as np
-from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "vendor" / "P2_24"))
 
-from v05.engine import CFG as SOURCE_CONFIG, select_expression  # noqa: E402
-from if16_research.common import frame_key, sequence  # noqa: E402
-from if16_research.nominate import nominate  # noqa: E402
+from v05.engine import CFG as SOURCE_CONFIG  # noqa: E402
+from if16_research.common import frame_key  # noqa: E402
 from if16_research.select import merge  # noqa: E402
 from if17_research.catalog import build_catalog  # noqa: E402
-from p1.io import command, read_video  # noqa: E402
+from resumable import scan
 
 import navigation as wave_module
-
-
-def windowed_nominations(frames, source, window_seconds, disabled=()):
-    """Run the unchanged nominator per time window, keyed by original frame."""
-    windows = defaultdict(list)
-    for frame in frames:
-        windows[int(frame["t"] // window_seconds)].append(frame)
-    positions = {frame_key(source, row): i for i, row in enumerate(frames)}
-    combined = defaultdict(list)
-    produced = 0
-    for index, window in windows.items():
-        produced += 1
-        channels, _, _ = nominate(sequence(window), source, disabled=disabled)
-        for key, items in channels.items():
-            combined[key].extend(
-                row | {"sample": positions[row["frame_id"]], "analysis_window": index}
-                for row in items
-            )
-    return combined, produced
-
-
-def scan_source(video, folder, fps, explicit_limit):
-    """Reuse the exact source reader without the research adapter's 5,000-frame ceiling."""
-    frames, source = read_video(video, fps=fps, width=SOURCE_CONFIG["width"], max_frames=sys.maxsize)
-    if explicit_limit > 0 and len(frames) > explicit_limit:
-        indices = sorted(set(np.linspace(0, len(frames) - 1, explicit_limit).round().astype(int)))
-        frames = [frames[index] for index in indices]
-        source["sampling_downgrade"] = f"uniformly bounded to {explicit_limit} candidates"
-    height, width = frames[0]["gray"].shape
-    folder.mkdir(parents=True, exist_ok=True)
-    frame_bytes = height * width * 3
-    with TemporaryDirectory(prefix="observer_rgb_") as scratch:
-        expression = Path(scratch) / "select.txt"
-        filtergraph = f"select='{select_expression([f['source_frame'] for f in frames])}',scale={width}:{height},format=rgb24"
-        expression.write_text(filtergraph, encoding="ascii")
-        argv = ["ffmpeg", "-v", "error", "-xerror", "-noautorotate", "-i", video, "-map", "0:v:0",
-                "-/filter:v", str(expression), "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
-        with TemporaryFile() as errors, Popen(argv, stdout=PIPE, stderr=errors) as decoder:
-            try:
-                for i, frame in enumerate(frames):
-                    pixels = decoder.stdout.read(frame_bytes)
-                    if len(pixels) != frame_bytes:
-                        raise ValueError(f"RGB/source-PTS join mismatch at sampled frame {i}")
-                    path = folder / f"{i:04d}.png"
-                    Image.frombytes("RGB", (width, height), pixels).save(path)
-                    frame.update(sample=i, time_base=source["time_base"], image=str(path.resolve()))
-                if decoder.stdout.read(1) or decoder.wait():
-                    raise ValueError("RGB/source-PTS join mismatch after the final frame")
-            except Exception:
-                if decoder.poll() is None:
-                    decoder.kill()
-                decoder.wait()
-                errors.seek(0)
-                print(errors.read().decode("utf-8", errors="replace"), file=sys.stderr)
-                raise
-    source["sampled_frame_count"] = len(frames)
-    return frames, source
 
 
 def main():
@@ -97,6 +35,7 @@ def main():
                         help="0 = no cap. A positive value only bounds pair work and is always reported.")
     parser.add_argument("--window-seconds", type=int, default=30)
     parser.add_argument("--keep-analysis", action="store_true")
+    parser.add_argument("--interrupt-after-windows", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--disable-dimensions", nargs="*", choices=[f"D{i}" for i in range(1, 7)], default=[])
     args = parser.parse_args()
 
@@ -108,8 +47,8 @@ def main():
 
     if args.window_seconds < 1 or args.fps <= 0:
         raise ValueError("Window seconds and sampling rate must be positive")
-    frames, source = scan_source(video, out / "pool", args.fps, args.limit)
-    combined, window_count = windowed_nominations(frames, source, args.window_seconds, args.disable_dimensions)
+    frames, source, combined, window_count, resumed = scan(video, out, args.fps, args.limit, SOURCE_CONFIG["width"], args.window_seconds,
+                                                            args.disable_dimensions, args.interrupt_after_windows)
     library = merge(frames, source, combined)
 
     # Native pixels are produced on demand at read time, so the catalogue keeps
@@ -174,6 +113,7 @@ def main():
         "sampled_frame_count": len(frames),
         "catalog_frame_count": len(catalog),
         "analysis_windows": window_count,
+        "window_receipts_reused": resumed,
         "nomination_counts": dict(sorted(dimensions.items())),
         "sampling": {
             "fps": args.fps,
@@ -198,19 +138,6 @@ def main():
     (out / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
     )
-
-    # The analysis-resolution pool is an intermediate: everything the tools need
-    # now lives in manifest.json and the native frames. Keeping it double the
-    # cache for no reader, so drop it after the catalog is written.
-    pool_dir = out / "pool"
-    if pool_dir.is_dir():
-        for leftover in pool_dir.rglob("*"):
-            if leftover.is_file():
-                leftover.unlink()
-        for folder in sorted(pool_dir.rglob("*"), reverse=True):
-            if folder.is_dir():
-                folder.rmdir()
-        pool_dir.rmdir()
 
     print(json.dumps({"ok": True, "out": str(out), "catalog": len(catalog), "sampled": len(frames)}))
 

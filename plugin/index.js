@@ -21,12 +21,13 @@ import { fileURLToPath } from 'node:url'
 import { installExtensions } from './integration.js'
 import { journal } from './journal.js'
 import { processLocksAvailable, withProcessLock } from './process_lock.js'
+import { OVERVIEW, registerGuided } from './guide.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const INDEXER = join(HERE, 'python', 'index_video.py')
 const EVIDENCE_WORKER = join(HERE, 'python', 'evidence.py')
 const EXCLUDED_SHA256 = '7f74580c0426420011267f3ad0c68bfa8a53c91b2ae74fa168912a72d4a201cf'
-const CACHE_VERSION = 'observer-index-v4'
+const CACHE_VERSION = 'observer-index-v5'
 const indexing = new Map()
 const archiveQueue = new Map()
 
@@ -270,6 +271,17 @@ async function assertSource(binding) {
   }
 }
 
+async function metadataVersion(binding) {
+  const origin = binding.manifest.video_sha256
+  try {
+    if (await sha256File(binding.manifest.video_path) === origin) return { status: 'current_source', catalogue_source_sha256: origin }
+    return { status: 'stale_source_changed', catalogue_source_sha256: origin, recovery: 'Call video_open again before using this catalogue as current evidence.' }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    return { status: 'stale_source_unavailable', catalogue_source_sha256: origin, recovery: 'Restore the original or open another source.' }
+  }
+}
+
 /** Resolve one video handle for the calling Agent, or explain why it is absent. */
 function bindingFor(exec) {
   const binding = activeBindings.get(exec.agent?.session)
@@ -351,9 +363,11 @@ async function indexVideo(config, videoPath, signal) {
   if (existsSync(manifestPath)) return { ...(await load()), reused: true }
   const current = indexing.get(folder)
   if (current) { await current; return { ...(await load()), reused: true } }
-  const build = (async () => {
+  const buildInStage = async () => {
+    if (existsSync(manifestPath)) return true
     await mkdir(dirname(folder), { recursive: true })
-    const stage = await mkdtemp(`${folder}-stage-`)
+    const stage = `${folder}-checkpoint`
+    await mkdir(stage, { recursive: true })
     try {
       const argv = ['-B', '-X', 'utf8', INDEXER, '--video', absolute, '--out', stage, '--fps', String(fps)]
       if (limit > 0) argv.push('--limit', String(limit))
@@ -369,13 +383,17 @@ async function indexVideo(config, videoPath, signal) {
       try { await rename(stage, folder) } catch (error) {
         if (!existsSync(manifestPath)) throw error
       }
-    } finally {
-      await rm(stage, { recursive: true, force: true })
+      return false
+    } catch (error) {
+      // Keep immutable completed analysis windows and the source signature for a retry.
+      throw error
     }
-  })()
+  }
+  const build = config.processLocks === false || !processLocksAvailable ? buildInStage() : withProcessLock(root, `offline-index:${folder}`, buildInStage, signal)
   indexing.set(folder, build)
-  try { await build } finally { if (indexing.get(folder) === build) indexing.delete(folder) }
-  return { ...(await load()), reused: false }
+  let reused
+  try { reused = await build } finally { if (indexing.get(folder) === build) indexing.delete(folder) }
+  return { ...(await load()), reused }
 }
 
 /**
@@ -529,6 +547,29 @@ async function decodeFrame(binding, config, sourceFrame, target, signal) {
   }
 }
 
+async function verifiedSeek(binding, config, indices, output, signal) {
+  if (config.seekSource === false || binding.manifest.duration_seconds < 30) return false
+  const timeline = await sourceTimeline(binding, config, signal)
+  const rows = indices.map((i) => timeline[i])
+  if (rows.some((r) => !r) || rows[0].seconds - binding.manifest.start < 30) return false
+  const pts = rows.map((r) => r.pts)
+  const select = pts.map((p) => `eq(pts\\,${p})`).join('+')
+  const begins = Math.max(0, rows[0].seconds - binding.manifest.start - 3)
+  try {
+    const {stderr} = await run(config.ffmpegPath || 'ffmpeg', ['-hide_banner','-loglevel','info','-xerror','-ss',String(begins),'-copyts',
+      '-noautorotate','-i',binding.manifest.video_path,'-map','0:v:0','-vf',`select=${select},showinfo,format=rgb24`,
+      '-fps_mode','passthrough','-start_number','0','-frames:v',String(pts.length),'-y',output],signal,dirname(output))
+    const received = [...stderr.matchAll(/\bpts:\s*(-?\d+)\s+pts_time:/g)].map((m)=>Number(m[1]))
+    const base = /config in time_base: ([\d/]+)/.exec(stderr)?.[1]
+    if (base !== binding.manifest.time_base || received.length !== pts.length || received.some((p,i)=>p!==pts[i])) return false
+    await binding.ledger.append({event:'source_decode_window',video_sha256:binding.manifest.video_sha256,method:'verified_seek',pts,at:new Date().toISOString()})
+    return true
+  } catch (error) {
+    signal?.throwIfAborted()
+    return false
+  }
+}
+
 /** Export one exact source frame at native resolution and cache the PNG. */
 async function nativeFrame(binding, config, row, signal) {
   const folder = join(dirname(binding.manifest.catalog_path), 'native')
@@ -537,7 +578,10 @@ async function nativeFrame(binding, config, row, signal) {
   await mkdir(folder, { recursive: true })
   const temporary = join(folder, `${randomUUID()}.png`)
   try {
-    await decodeFrame(binding, config, row.source_frame, temporary, signal)
+    if (!await verifiedSeek(binding, config, [row.source_frame], temporary, signal)) {
+      await rm(temporary,{force:true})
+      await decodeFrame(binding, config, row.source_frame, temporary, signal)
+    }
     await assertSource(binding)
     try { await rename(temporary, target) } catch (error) { if (!existsSync(target)) throw error }
   } finally {
@@ -560,9 +604,12 @@ async function nativeBatch(binding, config, rows, signal) {
     // Select exact decode indices in one forward pass; checks compare against
     // the existing exact single-frame decoder. Filenames use emission order.
     const filter = missing.map((i) => `eq(n\\,${i})`).join('+')
-    await run(config.ffmpegPath || 'ffmpeg', ['-v', 'error', '-xerror', '-noautorotate', '-i', binding.manifest.video_path,
-      '-map', '0:v:0', '-vf', `select=${filter},format=rgb24`, '-fps_mode', 'passthrough', '-start_number', '0',
-      '-frames:v', String(missing.length), join(stage, '%d.png')], signal, stage)
+    if (!await verifiedSeek(binding, config, missing, join(stage,'%d.png'), signal)) {
+      for (const file of await readdir(stage)) await rm(join(stage,file),{force:true})
+      await run(config.ffmpegPath || 'ffmpeg', ['-v', 'error', '-xerror', '-noautorotate', '-i', binding.manifest.video_path,
+        '-map', '0:v:0', '-vf', `select=${filter},format=rgb24`, '-fps_mode', 'passthrough', '-start_number', '0',
+        '-frames:v', String(missing.length), join(stage, '%d.png')], signal, stage)
+    }
     await assertSource(binding)
     const images = await readdir(stage)
     if (images.length !== missing.length || missing.some((_, i) => !images.includes(`${i}.png`))) throw new Error('Source batch decode emitted a different number of frames.')
@@ -621,14 +668,15 @@ const imageArraySchema = {
 }
 
 export function apply(ctx, config = {}) {
+  const register = registerGuided(ctx, config.guide !== false)
   ctx.effect(() => {
     const folder = join(cacheRoot(config), 'runtime-loads')
-    const marker = { version: '0.4.0', entry: fileURLToPath(import.meta.url), pid: process.pid, processLocksAvailable,
+    const marker = { version: '0.5.0', entry: fileURLToPath(import.meta.url), pid: process.pid, processLocksAvailable,
       executable: process.execPath, electron: process.versions.electron ?? null, at: new Date().toISOString() }
     mkdir(folder, { recursive: true }).then(() => writeFile(join(folder, `${randomUUID()}.json`), JSON.stringify(marker), { flag: 'wx' })).catch(() => undefined)
     return () => {}
   })
-  installExtensions(ctx, config, {
+  installExtensions({tools:{register}}, config, {
     bindingFor, selection, assertSource, evidence: listEvidence,
     imageArraySchema, imageBlock, attach: (bytes, name) => attachPng(ctx, bytes, name),
     assertImageRoute: (exec) => assertImageCapableRoute(ctx, exec),
@@ -654,7 +702,7 @@ export function apply(ctx, config = {}) {
     return () => { cancelled = true; void cancelled }
   })
 
-  ctx.tools.register({
+  register({
     name: 'video_open',
     description:
       'Index a local video into a reusable keyframe catalogue and bind it to this session. '
@@ -695,7 +743,8 @@ export function apply(ctx, config = {}) {
           + `from ${value.sampled_frames} sampled at ${value.sampling}. `
           + `Nominations ${value.nominations_by_dimension}. `
           + `Times are source PTS seconds (time_base ${value.time_base}). `
-          + `${value.reused_index ? 'Reused the cached index.' : 'Built a new index.'}`,
+          + `${value.reused_index ? 'Reused the cached index.' : 'Built a new index.'}`
+          + (config.guide === false ? '' : `\n${OVERVIEW}`),
       }],
     },
     async execute(args, exec) {
@@ -757,7 +806,7 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  ctx.tools.register({
+  register({
     name: 'catalog_search',
     description:
       'Query catalogue metadata for the open video: frame identifiers, source times and '
@@ -849,19 +898,21 @@ export function apply(ctx, config = {}) {
           : 'sampled, not nominated'
         return `${item.frame_id} | ${where} | ${what}`
       })
+      const version = await metadataVersion(binding)
       return {
         resolved_range: `${seconds(lo)}-${seconds(hi)}s`,
         clamped,
         matched: rows.length,
         ...(nextCursor === undefined ? {} : { next_cursor: nextCursor }),
         frames: lines.length === 0 ? '(no frames in this range)' : lines.join('\n'),
-        note: 'Metadata only. Nomination dimensions and roles are local image measurements, '
+        source_version: version,
+        note: `${JSON.stringify(version)} Metadata only. Nomination dimensions and roles are local image measurements, `
           + 'not object identities, events or causes.',
       }
     },
   })
 
-  ctx.tools.register({
+  register({
     name: 'wave_query',
     description:
       'Query navigation cues derived from adjacent catalogued frames: where the measured counts '
@@ -976,7 +1027,7 @@ export function apply(ctx, config = {}) {
         ...(offset + pageSize < cues.length ? { next_cursor: offset + pageSize } : {}),
         cues: lines.length === 0 ? '(no cue for this signal in the range)' : lines.join('\n'),
         unknown_intervals: unknown.length === 0 ? 'none in range' : unknown.join(', '),
-        note: 'Navigation only, zero images, and never an authorisation to read a frame: the '
+        note: `${JSON.stringify(await metadataVersion(binding))} Navigation only, zero images, and never an authorisation to read a frame: the `
           + 'purpose recorded in observation_goal decides that, not a cue. Counts are distinct '
           + 'region tokens (I) and distinct relation structures keyed by region and evidence '
           + 'family (S) over observations actually made; they are not object counts, '
@@ -987,7 +1038,7 @@ export function apply(ctx, config = {}) {
 
   // A0/A2 get no purpose prompt at all, so the tool itself must be absent.
   if (config?.purposeGate !== false) {
-    ctx.tools.register({
+    register({
       name: 'observation_goal',
       description:
         'Record the observation goal for this session, or read the current ledger. A goal states '
@@ -1080,7 +1131,7 @@ export function apply(ctx, config = {}) {
 
   // A2/A3 expose the unobserved axis; A0/A1 must not, or the factor is not isolated.
   if (config?.unobservedAxis !== false) {
-    ctx.tools.register({
+    register({
       name: 'observation_coverage',
       description:
         'Report which source frames were actually delivered to this agent, from the delivery '
@@ -1270,7 +1321,7 @@ export function apply(ctx, config = {}) {
     })
   }
 
-  ctx.tools.register({
+  register({
     name: 'evidence_list',
     description:
       'List the evidence ids this session actually holds for the open video, one per delivered '
@@ -1324,7 +1375,7 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  ctx.tools.register({
+  register({
     name: 'external_source',
     description:
       'Record that a conclusion came from a computation outside the image tools (shell, ffmpeg, '
@@ -1382,7 +1433,7 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  ctx.tools.register({
+  register({
     name: 'delivery_request',
     description:
       'Deliver exact original frames from the open video at native resolution. Identify frames by '
@@ -1629,7 +1680,7 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  ctx.tools.register({
+  register({
     name: 'source_resample',
     description:
       'Re-decode the original video over a chosen interval and deliver evenly spaced native frames. '

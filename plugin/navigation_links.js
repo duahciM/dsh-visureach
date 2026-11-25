@@ -107,12 +107,13 @@ export function installNavigationLinks(tool, config, { backend, page, loadResult
       const ignored = []
       for (const [ref, call] of refs) {
         const channel = { frame_ocr: 'ocr', video_text_search: call.result_channel, semantic_search: 'semantic', visual_compare: 'computed',
-          compare_object_views: 'computed', change_recheck: 'computed' }[call.tool]
+          compare_object_views: 'computed', relation_figure2: 'computed', change_recheck: 'computed' }[call.tool]
         if (!channel || (a.channel && a.channel !== channel)) continue
         let data
         try { ({ data } = await loadResult(b, ref)) } catch (error) { ignored.push({ result_ref: ref, reason: error.message }); continue }
         const clue = (start, end, label, extra = {}) => add({ channel, start, end, label, result_ref: ref,
           roots: [ref, ...(extra.roots ?? [])], pts: extra.pts ?? null,
+          relation: extra.relation ?? null, index_layer: extra.index_layer ?? null,
           support: channel === 'computed' ? 'stored calculation, inspect scope' : 'retrieval or text clue; use originals for visual claims' })
         if (channel === 'ocr' && data.source_frame) for (const item of data.items ?? []) {
           const { seconds, pts } = data.source_frame
@@ -126,6 +127,11 @@ export function installNavigationLinks(tool, config, { backend, page, loadResult
           const frames = data.source_originals ?? data.original ?? []
           for (const f of frames) clue(f.seconds, f.seconds, call.tool, { pts: f.pts, roots: data.root ? [data.root] : [] })
           if (data.requested_range) clue(...data.requested_range, call.tool)
+          if (data.index_layer === 'session_incremental') {
+            for (const edge of data.figure2?.relations ?? []) for (const type of edge.types) {
+              clue(data.seconds, data.seconds, type, { pts: data.pts, roots: [data.evidence_id, ...edge.roots], relation: type, index_layer: data.index_layer })
+            }
+          }
         }
       }
       let missing = []

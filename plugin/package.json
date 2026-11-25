@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-video-observer",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Video observation tools: keyframe catalogue, change hints, native-resolution frame delivery and source-video resampling for an image-capable Agent.",
@@ -17,6 +17,9 @@
     "process_lock.js",
     "observation_tools.js",
     "navigation_links.js",
+    "guide.js",
+    "live_plugin.js",
+    "viewer.js",
     "mcp_stdio.js",
     "stream_contract.schema.json",
     "cordis.patch.yml",

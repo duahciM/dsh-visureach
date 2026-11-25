@@ -4,6 +4,9 @@ from pathlib import Path
 import json
 
 import cv2
+from if16_research.common import frame_key
+from if16_research.nominate import nominate
+from p1.core import quality
 from p217_runtime import Case, make_candidates, feedback, visual
 from p223_runtime import figure1, figure2, node_bundle
 from p14_scene_prototypes.features import sift_pair
@@ -27,6 +30,8 @@ class LocalBook(Case):
 
 
 def research(args):
+    if args["action"] == "incremental_figure":
+        return incremental_figure(args)
     book = LocalBook(args)
     operation = args["action"]
     if operation == "figure2":
@@ -75,3 +80,41 @@ def research(args):
                 "examined": len(comparisons), "verified_matches": len(hits), "items": hits, "comparisons": comparisons,
                 "anchor": {k: args["anchor"][k] for k in ("pts", "time_base", "seconds", "source_frame", "png_sha256")}, "coordinates": book.contract}
     raise ValueError(operation)
+
+
+def incremental_figure(args):
+    source = args["source"]
+    height = max(8, round(320 * source["probe"]["height"] / source["probe"]["width"]))
+    frames = []
+    rasters = {}
+    for row in sorted(args["frames"], key=lambda r: r["seconds"]):
+        rgb, gray = visual(row["path"], height)
+        frame = row | {"t": row["seconds"], "gray": gray, "rgb": cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)} | quality(gray)
+        rasters[frame_key(source, frame)] = (rgb, gray)
+        frames.append(frame)
+    target = next(f for f in frames if f["pts"] == args["pts"])
+    key = frame_key(source, target)
+    nominations, _, _ = nominate(frames, source, disabled=args.get("disabled", []))
+    observed = [r for candidates in nominations.values() for r in candidates if r["frame_id"] == key]
+    roots = args["roi_roots"]
+    regions = [{"dimension_id": r["dimension_id"], "role": r["role"], "region_xywh_analysis": r["applicable_region"],
+                "evidence_root_ids": r["evidence_root_ids"]} for r in observed]
+    factor = [320 / source["probe"]["width"], height / source["probe"]["height"]] * 2
+    regions.extend({"dimension_id": "D1", "role": "requested_roi_visual_measurement",
+                    "region_xywh_analysis": [v*s for v, s in zip(box, factor)], "evidence_root_ids": [root]}
+                   for box, root in zip(args.get("regions_native", []), roots))
+
+    class OriginalBook:
+        def image(self, name):
+            return rasters[name]
+
+    spatial = node_bundle(OriginalBook(), {"candidate_id": key}, {"frame_id": key, "observations": regions, "nominations": observed})
+    relations = figure2(spatial)
+    f1 = figure1(spatial, relations)
+    return {"status": "completed", "index_layer": "session_incremental", "pts": target["pts"], "seconds": target["seconds"],
+            "time_base": target["time_base"], "frame_id": key, "evidence_id": args["evidence_id"],
+            "source_originals": [{k: f[k] for k in ("pts", "time_base", "seconds", "source_frame", "png_sha256")} for f in frames],
+            "summary": {"regions": len(relations["nodes"]), "measured_pairs": relations["distinct_pairs"],
+                        "edge_types": sorted({kind for edge in relations["relations"] for kind in edge["types"]})},
+            "scope": "Exact delivered original, optional chosen ROI and measured neighboring originals; projected region evidence only.",
+            "nomination_observations": observed, "figure2": relations, "figure1": f1, "coordinates": {"analysis_width": 320, "analysis_height": height}}

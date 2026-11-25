@@ -3,12 +3,14 @@ import { readFile, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { createInterface } from 'node:readline'
 import { apply } from './index.js'
+import { apply as applyLive } from './live_plugin.js'
 
 const configPath = process.argv[2]
 if (!configPath) throw new Error('Usage: node mcp_stdio.js <configuration.json> <authorized-source-directory>...')
 const config = JSON.parse(await readFile(configPath, 'utf8'))
-const roots = await Promise.all(process.argv.slice(3).map((path) => realpath(resolve(path))))
-if (!roots.length) throw new Error('The transport operator must specify authorized source directories.')
+const live = Boolean(config.streamDb)
+const roots = live ? [] : await Promise.all(process.argv.slice(3).map((path) => realpath(resolve(path))))
+if (!live && !roots.length) throw new Error('The transport operator must specify authorized source directories.')
 const tools = new Map(), attachments = new Map()
 const runtime = {
   effect: (run) => run(), tools: { register: (tool) => tools.set(tool.name, tool) },
@@ -21,7 +23,8 @@ const runtime = {
     } }
   },
 }
-apply(runtime, config)
+if (live) applyLive(runtime, config)
+else apply(runtime, config)
 const exec = { agent: { id: 'mcp-' + randomUUID(), session: { requestHeader: () => ({ config: { provider: 'mcp', model: 'image-client' } }) } } }
 const trustedInputPath = async (path) => {
   const actual = await realpath(resolve(path))
@@ -34,7 +37,7 @@ const trustedInputPath = async (path) => {
 
 async function dispatch(method, params) {
   if (method === 'initialize') return { protocolVersion: params.protocolVersion ?? '2025-11-25',
-    capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'video-observer', version: '0.4.0' } }
+    capabilities: { tools: { listChanged: false } }, serverInfo: { name: live?'video-observer-live':'video-observer', version: '0.5.0' } }
   if (method === 'ping') return {}
   if (method === 'tools/list') return { tools: [...tools.values()].map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) }
   if (method !== 'tools/call') return null

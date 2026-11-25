@@ -9,6 +9,8 @@ const array = (items) => ({ type: 'array', items })
 const xywh = { ...array(integer), minItems: 4, maxItems: 4 }
 const range = { start: number, end: number, cursor: integer, page_size: integer }
 const view = { type: 'object', properties: { pts: integer, native_xywh: xywh }, required: ['pts', 'native_xywh'] }
+const identityKeys = ['observation_id', 'appearance_id', 'slot_id', 'context_id', 'instance_candidate_id', 'track_id']
+const matchesIdentity = (record, key) => identityKeys.some((field) => record[field] === key)
 const idOf = (prefix, ...parts) => `${prefix}-${createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 24)}`
 const sourceRows = (b, rows) => rows.filter((r) => r.video_sha256 === b.manifest.video_sha256)
 const statusScope = 'Sampled image-plane evidence. Open time gaps, camera pose, and physical identity remain unknown.'
@@ -70,13 +72,13 @@ export function installObservationTools(tool, config, api) {
 
   if (config.objectObservation !== false) {
     tool('object_candidate', 'Keep or list local object candidate views at exact PTS and native rectangles. A label may have multiple prototypes and recurrence, replacement or conflict hypotheses. This does not merge physical identities.',
-      { action: { type: 'string', enum: ['add', 'list'] }, candidate_id: text, label: text, view, evidence_ids: array(text),
+      { action: { type: 'string', enum: ['add', 'list'] }, candidate_id: text, identity_id: text, label: text, view, evidence_ids: array(text),
         role: { type: 'string', enum: ['prototype', 'recurrence_candidate', 'replacement_candidate', 'conflict', 'observed_view'] }, ...range }, ['action'], async (b, a, exec) => {
         const history = sourceRows(b, await b.ledger.read())
         const options = history.filter((r) => r.event === 'object_candidate_view')
         if (a.action === 'list') {
           const { lo, hi } = backend.selection(b, a.start, a.end)
-          return page(options.filter((r) => (!a.candidate_id || r.candidate_id === a.candidate_id) && r.view.seconds >= lo && r.view.seconds <= hi), a)
+          return page(options.filter((r) => (!a.candidate_id || r.candidate_id === a.candidate_id) && (!a.identity_id || matchesIdentity(r, a.identity_id)) && r.view.seconds >= lo && r.view.seconds <= hi), a)
         }
         if (a.action !== 'add' || !a.label?.trim() || !['prototype', 'recurrence_candidate', 'replacement_candidate', 'conflict', 'observed_view'].includes(a.role)) {
           throw new Error('Pass a candidate label and an explicit observed-view or hypothesis role.')
@@ -98,12 +100,25 @@ export function installObservationTools(tool, config, api) {
         return entry
       })
 
-    tool('compare_object_views', 'Compare local object regions across multiple exact original views. Separates in-region descriptor holdout, excluded background holdout, residual and incompatible alternatives. Provide native boxes or saved candidate IDs. Optional A/B probes retain sampled XB and XD separately.',
-      { prototypes: array(view), candidate_id: text, samples: array(view), ab_comparison: {type: 'boolean'} }, ['samples'], async (b, a, exec) => {
-        const old = a.candidate_id ? sourceRows(b, await b.ledger.read()).filter((r) => r.event === 'object_candidate_view'
-          && r.candidate_id === a.candidate_id && r.role === 'prototype') : []
-        const chosen = a.prototypes ?? old.map((r) => r.view)
-        if (a.ab_comparison && chosen.length !== 2) throw new Error('A/B mode uses exactly two ordered reference views.')
+    tool('compare_object_views', 'Compare exact native-pixel ROIs. In direct mode use one or more prototypes or saved reference IDs. In A/B mode set mode=ab and supply reference_a and reference_b separately; samples are only test views. Findings are 2D and may abstain.',
+      { mode: { type: 'string', enum: ['direct', 'ab'] }, reference_a: { ...view, description: 'Fixed A reference, not a sample.' },
+        reference_b: { ...view, description: 'Fixed B reference, not a sample.' }, prototypes: { ...array(view), description: 'Direct references, or legacy ordered A/B with ab_comparison.' },
+        candidate_id: text, reference_view_ids: array(text), samples: { ...array(view), description: 'Views to test against the fixed references; never used as references automatically.' },
+        ab_comparison: {type: 'boolean', description: 'Legacy mode switch; prefer mode=ab.'} }, ['samples'], async (b, a, exec) => {
+        const history = a.candidate_id || a.reference_view_ids ? sourceRows(b, await b.ledger.read()).filter((r) => r.event === 'object_candidate_view') : []
+        const selected = (a.reference_view_ids ?? []).map((id) => history.find((r) => matchesIdentity(r, id)))
+        const recovery = (code, message, example) => ({ status: 'invalid_parameters', code, message, retry_tool: 'compare_object_views',
+          next_action: 'Use exact PTS from catalog_search or source_resample, and x,y,width,height in original pixels.', example, scope: statusScope })
+        if (selected.some((r) => !r)) return recovery('UNKNOWN_REFERENCE_VIEW', 'Look up the view in object_candidate action=list, or supply exact prototype views.', { mode: 'direct', prototypes: [], samples: a.samples })
+        const named = Boolean(a.reference_a || a.reference_b)
+        const ab = a.mode === 'ab' || a.ab_comparison === true || named
+        const stored = history.filter((r) => r.candidate_id === a.candidate_id && r.role === 'prototype')
+        const chosen = named ? [a.reference_a, a.reference_b] : (a.prototypes ?? (a.reference_view_ids ? selected.map((r) => r.view) : stored.map((r) => r.view)))
+        if (ab && (chosen.length !== 2 || chosen.some((r) => !r))) return recovery('MISSING_AB_REFERENCES',
+          'A/B requires two fixed references, independent of the test samples. Add reference_a and reference_b, then keep the views to be tested in samples. For one reference, use direct mode.',
+          { mode: 'ab', required_fields: ['reference_a', 'reference_b', 'samples'], sample_view_shape: { pts: 'exact source PTS', native_xywh: ['x', 'y', 'width', 'height'] } })
+        if (!chosen.length || !a.samples?.length) return recovery('MISSING_COMPARISON_VIEWS', 'Provide at least one reference and one separate sample.',
+          { mode: 'direct', required_fields: ['prototypes or candidate_id or reference_view_ids', 'samples'] })
         const prototypes = await sourceViews(b, exec, chosen)
         const samples = await sourceViews(b, exec, a.samples)
         const originals = [...prototypes, ...samples]
@@ -129,23 +144,26 @@ export function installObservationTools(tool, config, api) {
           return { sample, comparisons }
         })
         const order = [...rows].sort((x, y) => x.sample.seconds - y.sample.seconds)
-        const markers = a.ab_comparison ? abMarkers(order, prototypes) : null
-        return { status: 'completed', candidate_id: a.candidate_id ?? null, prototypes, source_sha256: b.manifest.video_sha256,
+        const markers = ab ? abMarkers(order, prototypes) : null
+        return { status: 'completed', mode: ab ? 'ab' : 'direct', candidate_id: a.candidate_id ?? null, prototypes, source_sha256: b.manifest.video_sha256,
           source_originals: prepared.map(({ path, ...f }) => f), sample_count: rows.length, rows, markers, scope: statusScope }
       })
   }
 
   if (config.stateMemory !== false) {
     tool('state_chain', 'Record or query timed candidate states and relationships, with source citations, earlier revisions and unknown gaps. Select by candidate, relationship, time or source root. No automatic object continuity between samples.',
-      { action: { type: 'string', enum: ['add', 'list'] }, candidate_id: text, related_candidate_id: text, relationship: text,
+      { action: { type: 'string', enum: ['add', 'list'] }, candidate_id: text, related_candidate_id: text, identity_id: text, relationship: text,
         phase: { type: 'string', enum: ['initial', 'change', 'interaction', 'final', 'observation', 'unknown'] }, content: text,
         pts: integer, root: text, evidence_ids: array(text), revision_ids: array(text), ...range }, ['action'], async (b, a, exec) => {
         const history = sourceRows(b, await b.ledger.read())
         const { lo, hi } = backend.selection(b, a.start, a.end)
         const revisions = revisionMap(history)
         const latest = latestMap(revisions)
+        const identity = a.identity_id && history.find((r) => r.event === 'object_candidate_view' && matchesIdentity(r, a.identity_id))
+        if (a.identity_id && !identity) throw new Error('Find an existing same-source identity_id with object_candidate action=list.')
+        const candidate = a.candidate_id ?? identity?.candidate_id
         if (a.action === 'list') {
-          const entries = history.filter((r) => r.event === 'state_chain_entry' && (!a.candidate_id || [r.candidate_id, r.related_candidate_id].includes(a.candidate_id))
+          const entries = history.filter((r) => r.event === 'state_chain_entry' && (!candidate || [r.candidate_id, r.related_candidate_id].includes(candidate))
             && (!a.phase || r.phase === a.phase) && (!a.relationship || r.relationship === a.relationship) && (!a.root || r.roots.includes(a.root))
             && lo <= r.frame.seconds && r.frame.seconds <= hi).sort((x, y) => x.frame.seconds - y.frame.seconds)
           const pts = [...new Set(entries.map((r) => r.frame.seconds))]
@@ -154,13 +172,14 @@ export function installObservationTools(tool, config, api) {
         }
         const candidates = new Set(history.filter((r) => r.event === 'object_candidate_view').map((r) => r.candidate_id))
         if (a.action !== 'add' || !a.content?.trim() || !['initial', 'change', 'interaction', 'final', 'observation', 'unknown'].includes(a.phase)
-          || !candidates.has(a.candidate_id) || (a.related_candidate_id && !candidates.has(a.related_candidate_id))) throw new Error('Provide an existing candidate, valid phase and the observed content.')
+          || !candidates.has(candidate) || (a.related_candidate_id && !candidates.has(a.related_candidate_id))) throw new Error('Provide an existing candidate, valid phase and the observed content.')
         const frame = stamp(b, await exact(b, exec, a.pts))
+        if (identity && (identity.view.pts !== frame.pts || identity.candidate_id !== candidate)) throw new Error('A view identity_id binds only its recorded candidate and exact PTS. Use candidate_id for a different PTS.')
         const refs = await checkRefs(b, history, [...new Set(a.evidence_ids ?? [])])
         if (a.phase !== 'unknown' && !refs.some((r) => r.type === 'original' && r.pts === frame.pts)) throw new Error('A visible state must cite an original received at its exact PTS.')
         const roots = [...new Set([frame.frame_id, ...(await Promise.all(refs.map((r) => originalRoots(b, r)))).flat(), ...refs.map((r) => r.id)])]
         const record = { event: 'state_chain_entry', state_id: randomUUID(), video_sha256: b.manifest.video_sha256, task_id: b.taskId,
-          candidate_id: a.candidate_id, related_candidate_id: a.related_candidate_id ?? null, relationship: a.relationship ?? null,
+          candidate_id: candidate, identity_id: a.identity_id ?? null, related_candidate_id: a.related_candidate_id ?? null, relationship: a.relationship ?? null,
           frame, phase: a.phase, content: a.content.trim(), roots, evidence_ids: refs.map((r) => r.id),
           revision_ids: validateRevisionDependencies(history, a.revision_ids), at: new Date().toISOString() }
         await b.ledger.append(record)
@@ -168,14 +187,18 @@ export function installObservationTools(tool, config, api) {
       })
 
     tool('observation_review', 'Inspect revision histories, upstream dependencies, downstream affected revisions and conflicts. Optional final claims are checked for citation type, shared original roots, and stale revision links. Semantic contradiction requires review.',
-      { observation_id: text, revision_id: text, query: text, evidence_ids: array(text), ...range,
-        final_claims: array({ type: 'object', properties: { content: text, evidence_ids: array(text), revision_ids: array(text), claim_scope: text }, required: ['content'] }) }, [], async (b, a) => {
+      { observation_id: text, revision_id: text, query: text, evidence_ids: array(text), omitted_observation_ids: array(text), ...range,
+        final_claims: array({ type: 'object', properties: { content: text, evidence_ids: array(text), revision_ids: array(text), claim_scope: text,
+          kind: { type: 'string', enum: ['direct', 'inference', 'unknown'] }, stated_details: array(text) }, required: ['content'] }) }, [], async (b, a) => {
         const history = sourceRows(b, await b.ledger.read())
         const revisions = revisionMap(history)
         const latest = latestMap(revisions)
         const disputes = history.filter((r) => r.event === 'observation_dispute')
         const stale = (id) => revisions.has(id) && latest.get(revisions.get(id).observation_id) !== id
+        const { lo, hi } = backend.selection(b, a.start, a.end)
+        const witnessed = new Map(backend.evidence(history, b.manifest.video_sha256).map((r) => [r.evidence_id, r.seconds]))
         const items = [...revisions.values()].filter((r) => (!a.observation_id || r.observation_id === a.observation_id) && (!a.revision_id || r.revision_id === a.revision_id)
+          && ((a.start == null && a.end == null) || r.evidence_ids.some((id) => witnessed.get(id) >= lo && witnessed.get(id) <= hi))
           && (!a.query || r.content.toLowerCase().includes(a.query.toLowerCase())) && (!a.evidence_ids || a.evidence_ids.some((id) => r.evidence_ids.includes(id))))
           .map((r) => ({ ...r, is_current: !stale(r.revision_id), revision_dependencies: [...ancestors(r.revision_id, revisions)].slice(1),
             needs_review_upstream: [...ancestors(r.revision_id, revisions)].slice(1).filter(stale),
@@ -193,14 +216,18 @@ export function installObservationTools(tool, config, api) {
           const dependencies = [...new Set(claim.revision_ids ?? [])]
           const connected = [...new Set(dependencies.filter((id) => revisions.has(id)).flatMap((id) => [...ancestors(id, revisions)]))]
           const scope = claim.claim_scope ?? 'visual'
-          return { content: claim.content, missing_or_invalid_refs: bad, scope_mismatches: refs.filter((r) => !r.allowed_scopes.includes(scope)).map((r) => r.id),
+          const literalNotInClaim = (claim.stated_details ?? []).filter((detail) => !claim.content.toLowerCase().includes(detail.toLowerCase()))
+          return { content: claim.content, kind: claim.kind ?? 'unclassified', declared_details_not_written_verbatim: literalNotInClaim,
+            missing_or_invalid_refs: bad, scope_mismatches: refs.filter((r) => !r.allowed_scopes.includes(scope)).map((r) => r.id),
             original_roots: Object.fromEntries(rootMap), same_source_groups: [...rootMap.values()].filter((ids) => ids.length > 1),
             origin_unresolved: refs.filter((r) => ![...rootMap.values()].some((ids) => ids.includes(r.id))).map((r) => r.id),
             citation_state: refs.length ? 'reference_present' : 'no_valid_reference', requested_scope: scope,
             stale_revision_ids: connected.filter(stale), unknown_revision_ids: dependencies.filter((id) => !revisions.has(id)),
             open_dispute_ids: disputes.filter((r) => connected.includes(r.revision_id)).map((r) => r.dispute_id), semantic_support: 'requires_independent_review' }
         }))
-        return { ...page(items, a), final_claim_checks: claims, scope: 'Mechanical review of source and dependency links. Check visual meaning from the original independently.' }
+        const omitted = [...new Set(a.omitted_observation_ids ?? [])].map((id) => ({ observation_id: id, revision_id: latest.get(id) ?? null, reason: 'agent_marked_omitted' }))
+        return { ...page(items, a), final_claim_checks: claims, declared_omissions: omitted,
+          scope: 'Mechanical source, literal-detail and dependency check. Time filters use timestamps of cited delivered originals. Independent visual review decides correctness or semantic omission.' }
       })
   }
 }
