@@ -201,7 +201,7 @@ function listEvidence(records, videoSha) {
 function cacheRoot(config) {
   if (config?.cacheDir) return resolve(config.cacheDir)
   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  return join(home, 'video-observer')
+  return join(home, 'video-observer-offline-060')
 }
 
 function resolvePython(config) {
@@ -671,7 +671,7 @@ export function apply(ctx, config = {}) {
   const register = registerGuided(ctx, config.guide !== false)
   ctx.effect(() => {
     const folder = join(cacheRoot(config), 'runtime-loads')
-    const marker = { version: '0.5.0', entry: fileURLToPath(import.meta.url), pid: process.pid, processLocksAvailable,
+    const marker = { version: '0.6.0', entry: fileURLToPath(import.meta.url), pid: process.pid, processLocksAvailable,
       executable: process.execPath, electron: process.versions.electron ?? null, at: new Date().toISOString() }
     mkdir(folder, { recursive: true }).then(() => writeFile(join(folder, `${randomUUID()}.json`), JSON.stringify(marker), { flag: 'wx' })).catch(() => undefined)
     return () => {}
@@ -1558,7 +1558,7 @@ export function apply(ctx, config = {}) {
               png_sha256: createHash('sha256').update(buffer).digest('hex'),
             }),
             frame_id: row.frame_id,
-            seconds: seconds(row.seconds),
+            seconds: row.seconds,
             pts: row.pts,
             source_frame: row.source_frame,
             in_catalog: false,
@@ -1587,7 +1587,7 @@ export function apply(ctx, config = {}) {
         delivered.push({
           evidence_id: evidenceId(sessionId, binding, { pts: row.pts, png_sha256: frameHash }),
           frame_id: row.frame_id,
-          seconds: seconds(row.seconds),
+          seconds: row.seconds,
           pts: row.pts,
           source_frame: row.source_frame,
           in_catalog: true,
@@ -1627,7 +1627,7 @@ export function apply(ctx, config = {}) {
             pts: entry.pts,
             png_sha256: createHash('sha256').update(buffer).digest('hex'),
           }),
-          seconds: seconds(entry.seconds),
+          seconds: entry.seconds,
           pts: entry.pts,
           source_frame: entry.index,
           in_catalog: false,

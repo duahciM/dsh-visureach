@@ -141,9 +141,9 @@ export function installExtensions(ctx, config, backend) {
       return { result_ref: a.result_ref, source_sha256: data.source_sha256, channel: data.channel, ...resultPage(data.data, a) }
     })
 
-  async function checkRefs(b, records, ids) {
+  async function checkRefs(b, records, ids, includeTimeSpans = false) {
     const evidence = new Map(backend.evidence(records, b.manifest.video_sha256).map((row) => [row.evidence_id, row]))
-    return Promise.all(ids.map((id) => reference(b, records, evidence, id)))
+    return Promise.all(ids.map((id) => reference(b, records, evidence, id, includeTimeSpans)))
   }
   tool('evidence_reference', 'Inspect citation type, source time, parent original and allowed support scope. Citation membership alone does not establish any claim.',
     { ids: list(text) }, ['ids'], async (b, a) => ({ items: await checkRefs(b, await b.ledger.read(), a.ids) }))
@@ -154,7 +154,7 @@ export function installExtensions(ctx, config, backend) {
   }
 
   if (config.researchNavigation !== false) {
-    tool('relation_figure2', 'Inspect Figure 1 region information and Figure 2 measured image-plane relationships. Catalogue PTS use the stored graph. At a reread PTS, use an original evidence receipt and optionally supply comparison PTS or native regions.',
+    tool('relation_figure2', 'Inspect Figure 1 region information and Figure 2 measured image-plane relationships. Catalogue PTS use frozen analysis rasters and nomination evidence. At a reread PTS, use an original receipt and optionally supply comparison PTS or native regions.',
       { pts: integer, incremental: {type: 'boolean'}, context_pts: list(integer), regions_native: list(box) }, ['pts'], async (b, a, exec) => {
         if (!a.incremental && !a.regions_native?.length && !a.context_pts?.length && b.catalog.frames.some((r) => r.pts === a.pts)) {
           return research(b, { action: 'figure2', pts: a.pts }, exec)
@@ -375,7 +375,7 @@ export function installExtensions(ctx, config, backend) {
     })
 
   if (config.claimVerification !== false) tool('claim_verify',
-    'Independently re-decode cited source frames and compare their PNG SHA, PTS and dimensions. Reports provenance, and leaves the semantic support decision to human/independent review.',
+    'Independently re-decode cited originals and crop parents, and compare source PNG SHA, PTS and dimensions. A verified parent does not verify crop pixels or semantic support.',
     { revision_id: text, evidence_ids: list(text) }, [], async (b, a, exec) => {
       const records = await b.ledger.read()
       const revision = a.revision_id && records.find((row) => row.event === 'observation_revision'
@@ -387,28 +387,40 @@ export function installExtensions(ctx, config, backend) {
       const temp = await mkdtemp(join(tmpdir(), 'verify_observation_'))
       try {
         const items = []
-        for (const [index, id] of ids.entries()) {
+        const checkedOriginals = new Map()
+        async function verifyOriginal(id) {
+          if (checkedOriginals.has(id)) return checkedOriginals.get(id)
           const cite = evidence.get(id)
-          if (!cite) {
-            try {
-              const typed = await reference(b, records, evidence, id)
-              items.push({ evidence_id: id, ...typed, integrity: typed.integrity, original_verified: false })
-            } catch (error) { items.push({ evidence_id: id, integrity: 'unknown_or_invalid_evidence_id', reason: error.message }) }
-            continue
-          }
           const frame = await exact(b, exec, cite.pts)
-          const out = join(temp, `${index}.png`)
+          const out = join(temp, `${checkedOriginals.size}.png`)
           await backend.decode(b, frame.source_frame, out, exec.signal)
           const bytes = await readFile(out)
           const got = digest(bytes)
           const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20)
-          items.push({ evidence_id: id, frame, original_sha256: cite.png_sha256, redecoded_sha256: got,
+          const result = { evidence_id: id, frame, original_sha256: cite.png_sha256, redecoded_sha256: got,
             width, height, integrity: got === cite.png_sha256 && cite.source_frame === frame.source_frame
-              && width === b.manifest.probe.width && height === b.manifest.probe.height ? 'verified' : 'mismatch' })
+              && width === b.manifest.probe.width && height === b.manifest.probe.height ? 'verified' : 'mismatch' }
+          checkedOriginals.set(id, result)
+          return result
+        }
+        for (const id of ids) {
+          if (evidence.has(id)) {
+            items.push(await verifyOriginal(id))
+            continue
+          }
+          let typed
+          try { typed = await reference(b, records, evidence, id) } catch (error) {
+            items.push({ evidence_id: id, integrity: 'unknown_or_invalid_evidence_id', reason: error.message })
+            continue
+          }
+          const parent = typed.type === 'derived' ? await verifyOriginal(typed.parent_evidence_id) : undefined
+          items.push({ evidence_id: id, ...typed, original_verified: false,
+            ...(parent ? { parent_verification: parent, crop_pixels_recomputed: false } : {}) })
         }
         const receipt = { event: 'claim_verification', revision_id: revision?.revision_id ?? null, items,
           source_integrity: items.every((r) => r.integrity === 'verified') ? 'verified'
-            : items.some((r) => r.integrity === 'mismatch' || r.integrity === 'unknown_or_invalid_evidence_id') ? 'failed' : 'mixed_evidence_scope',
+            : items.some((r) => ['mismatch', 'unknown_or_invalid_evidence_id'].includes(r.integrity) || r.parent_verification?.integrity === 'mismatch')
+              ? 'failed' : 'mixed_evidence_scope',
           semantic_support: 'requires_independent_review', video_sha256: b.manifest.video_sha256, at: new Date().toISOString() }
         await b.ledger.append(receipt)
         return receipt

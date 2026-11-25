@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { loadResult } from './proof.js'
+import { frameRoot } from './proof.js'
 
 const text = { type: 'string' }
 const integer = { type: 'integer' }
@@ -43,14 +43,9 @@ function ancestors(id, revisions, found = new Set()) {
   return found
 }
 
-async function originalRoots(b, ref) {
-  const source = b.manifest.video_sha256
-  const root = (pts) => `${source}:${b.manifest.time_base}:${pts}`
-  if (Number.isSafeInteger(ref.pts)) return [root(ref.pts)]
-  if (!ref.id.startsWith('vo-')) return []
-  const { data } = await loadResult(b, ref.id)
-  const frames = [data.source_frame, ...(data.original ?? []), ...(data.source_originals ?? [])]
-  return [...new Set(frames.filter((r) => Number.isSafeInteger(r?.pts)).map((r) => root(r.pts)))].sort()
+function originalRoots(b, ref) {
+  return (Number.isSafeInteger(ref.pts) ? [ref] : ref.source_moments ?? [])
+    .filter((r) => Number.isSafeInteger(r.source_frame)).map((r) => frameRoot(b, r))
 }
 
 export function installObservationTools(tool, config, api) {
@@ -117,6 +112,10 @@ export function installObservationTools(tool, config, api) {
         if (ab && (chosen.length !== 2 || chosen.some((r) => !r))) return recovery('MISSING_AB_REFERENCES',
           'A/B requires two fixed references, independent of the test samples. Add reference_a and reference_b, then keep the views to be tested in samples. For one reference, use direct mode.',
           { mode: 'ab', required_fields: ['reference_a', 'reference_b', 'samples'], sample_view_shape: { pts: 'exact source PTS', native_xywh: ['x', 'y', 'width', 'height'] } })
+        if (ab && chosen[0].pts === chosen[1].pts && JSON.stringify(chosen[0].native_xywh) === JSON.stringify(chosen[1].native_xywh)) {
+          return recovery('DUPLICATE_AB_REFERENCES', 'A and B point to the same PTS and native rectangle. Choose a different reference, or use direct mode with one reference.',
+            { mode: 'direct', prototypes: [chosen[0]], samples: a.samples })
+        }
         if (!chosen.length || !a.samples?.length) return recovery('MISSING_COMPARISON_VIEWS', 'Provide at least one reference and one separate sample.',
           { mode: 'direct', required_fields: ['prototypes or candidate_id or reference_view_ids', 'samples'] })
         const prototypes = await sourceViews(b, exec, chosen)
@@ -146,7 +145,13 @@ export function installObservationTools(tool, config, api) {
         const order = [...rows].sort((x, y) => x.sample.seconds - y.sample.seconds)
         const markers = ab ? abMarkers(order, prototypes) : null
         return { status: 'completed', mode: ab ? 'ab' : 'direct', candidate_id: a.candidate_id ?? null, prototypes, source_sha256: b.manifest.video_sha256,
-          source_originals: prepared.map(({ path, ...f }) => f), sample_count: rows.length, rows, markers, scope: statusScope }
+          source_originals: prepared.map(({ path, ...f }) => f), sample_count: rows.length, rows, markers,
+          measurement_definitions: {
+            target_mad_8bit: 'Arithmetic mean of absolute aligned 8-bit luma residuals in the usable target ROI after background offset correction.',
+            context_mad_8bit: 'Arithmetic mean of absolute aligned 8-bit luma residuals in excluded context after background offset correction.',
+            median_px: 'Median holdout reprojection error in analysis pixels.',
+            target_projection_median_px: 'Median target reprojection residual in analysis pixels for the excluded-context fit.',
+          }, scope: statusScope }
       })
   }
 
@@ -177,7 +182,7 @@ export function installObservationTools(tool, config, api) {
         if (identity && (identity.view.pts !== frame.pts || identity.candidate_id !== candidate)) throw new Error('A view identity_id binds only its recorded candidate and exact PTS. Use candidate_id for a different PTS.')
         const refs = await checkRefs(b, history, [...new Set(a.evidence_ids ?? [])])
         if (a.phase !== 'unknown' && !refs.some((r) => r.type === 'original' && r.pts === frame.pts)) throw new Error('A visible state must cite an original received at its exact PTS.')
-        const roots = [...new Set([frame.frame_id, ...(await Promise.all(refs.map((r) => originalRoots(b, r)))).flat(), ...refs.map((r) => r.id)])]
+        const roots = [...new Set([frame.frame_id, ...refs.flatMap((r) => originalRoots(b, r)), ...refs.map((r) => r.id)])]
         const record = { event: 'state_chain_entry', state_id: randomUUID(), video_sha256: b.manifest.video_sha256, task_id: b.taskId,
           candidate_id: candidate, identity_id: a.identity_id ?? null, related_candidate_id: a.related_candidate_id ?? null, relationship: a.relationship ?? null,
           frame, phase: a.phase, content: a.content.trim(), roots, evidence_ids: refs.map((r) => r.id),
@@ -194,23 +199,38 @@ export function installObservationTools(tool, config, api) {
         const revisions = revisionMap(history)
         const latest = latestMap(revisions)
         const disputes = history.filter((r) => r.event === 'observation_dispute')
+        const stateByRevision = new Map()
+        for (const state of history) if (state.event === 'state_chain_entry') for (const revision of state.revision_ids ?? []) {
+          if (!stateByRevision.has(revision)) stateByRevision.set(revision, [])
+          stateByRevision.get(revision).push({ state_id: state.state_id, candidate_id: state.candidate_id, pts: state.frame.pts })
+        }
         const stale = (id) => revisions.has(id) && latest.get(revisions.get(id).observation_id) !== id
         const { lo, hi } = backend.selection(b, a.start, a.end)
-        const witnessed = new Map(backend.evidence(history, b.manifest.video_sha256).map((r) => [r.evidence_id, r.seconds]))
-        const items = [...revisions.values()].filter((r) => (!a.observation_id || r.observation_id === a.observation_id) && (!a.revision_id || r.revision_id === a.revision_id)
-          && ((a.start == null && a.end == null) || r.evidence_ids.some((id) => witnessed.get(id) >= lo && witnessed.get(id) <= hi))
+        let selected = [...revisions.values()].filter((r) => (!a.observation_id || r.observation_id === a.observation_id) && (!a.revision_id || r.revision_id === a.revision_id)
           && (!a.query || r.content.toLowerCase().includes(a.query.toLowerCase())) && (!a.evidence_ids || a.evidence_ids.some((id) => r.evidence_ids.includes(id))))
-          .map((r) => ({ ...r, is_current: !stale(r.revision_id), revision_dependencies: [...ancestors(r.revision_id, revisions)].slice(1),
+        const unresolved_time_refs = []
+        if (a.start != null || a.end != null) {
+          const timed = new Set()
+          for (const id of new Set(selected.flatMap((r) => r.evidence_ids))) {
+            try {
+              const [ref] = await checkRefs(b, history, [id], true)
+              const samples = Number.isFinite(ref.seconds) ? [ref.seconds] : (ref.source_moments ?? []).map((f) => f.seconds)
+              if (samples.some((t) => lo <= t && t <= hi) || ref.text_time_spans?.some(([start, end]) => start <= hi && end >= lo)) timed.add(id)
+            } catch (error) { unresolved_time_refs.push({ id, reason: error.message }) }
+          }
+          selected = selected.filter((r) => r.evidence_ids.some((id) => timed.has(id)))
+        }
+        const items = selected.map((r) => ({ ...r, is_current: !stale(r.revision_id), revision_dependencies: [...ancestors(r.revision_id, revisions)].slice(1),
             needs_review_upstream: [...ancestors(r.revision_id, revisions)].slice(1).filter(stale),
             affected_downstream: [...revisions.keys()].filter((id) => id !== r.revision_id && ancestors(id, revisions).has(r.revision_id)),
-            disputes: disputes.filter((v) => v.revision_id === r.revision_id).map((v) => v.dispute_id) }))
+            disputes: disputes.filter((v) => v.revision_id === r.revision_id).map((v) => v.dispute_id), linked_states: stateByRevision.get(r.revision_id) ?? [] }))
         const claims = await Promise.all((a.final_claims ?? []).map(async (claim) => {
           const refs = [], bad = []
           for (const id of new Set(claim.evidence_ids ?? [])) {
             try { refs.push(...await checkRefs(b, history, [id])) } catch (error) { bad.push({ id, reason: String(error.message) }) }
           }
           const rootMap = new Map()
-          for (const ref of refs) for (const root of await originalRoots(b, ref)) {
+          for (const ref of refs) for (const root of originalRoots(b, ref)) {
             rootMap.set(root, [...(rootMap.get(root) ?? []), ref.id])
           }
           const dependencies = [...new Set(claim.revision_ids ?? [])]
@@ -226,8 +246,8 @@ export function installObservationTools(tool, config, api) {
             open_dispute_ids: disputes.filter((r) => connected.includes(r.revision_id)).map((r) => r.dispute_id), semantic_support: 'requires_independent_review' }
         }))
         const omitted = [...new Set(a.omitted_observation_ids ?? [])].map((id) => ({ observation_id: id, revision_id: latest.get(id) ?? null, reason: 'agent_marked_omitted' }))
-        return { ...page(items, a), final_claim_checks: claims, declared_omissions: omitted,
-          scope: 'Mechanical source, literal-detail and dependency check. Time filters use timestamps of cited delivered originals. Independent visual review decides correctness or semantic omission.' }
+        return { ...page(items, a), final_claim_checks: claims, declared_omissions: omitted, unresolved_time_refs,
+          scope: 'Mechanical source, literal-detail and dependency check. Time filters use original and crop timestamps, decoded calculation inputs or transcript intervals. Independent visual review decides correctness or semantic omission.' }
       })
   }
 }

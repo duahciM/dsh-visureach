@@ -37,7 +37,7 @@ const trustedInputPath = async (path) => {
 
 async function dispatch(method, params) {
   if (method === 'initialize') return { protocolVersion: params.protocolVersion ?? '2025-11-25',
-    capabilities: { tools: { listChanged: false } }, serverInfo: { name: live?'video-observer-live':'video-observer', version: '0.5.0' } }
+    capabilities: { tools: { listChanged: false } }, serverInfo: { name: live?'video-observer-live':'video-observer', version: live ? '0.5.0' : '0.6.0' } }
   if (method === 'ping') return {}
   if (method === 'tools/list') return { tools: [...tools.values()].map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) }
   if (method !== 'tools/call') return null

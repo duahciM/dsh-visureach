@@ -59,3 +59,7 @@ discrete navigation cues over that catalogue.
 
 `integration: false` disables the extension group. Any extension can also be
 turned off with its own setting. See [configuration and evidence contract](docs/INTEGRATION.md).
+# Offline update 0.6.0
+
+The offline workflow now connects figure measurements, candidate views, states, original and crop receipts, and observation revisions in `evidence_routes`. See [V060](docs/V060.md) for examples, evidence boundaries and migration. The existing file-simulated live module carries over from 0.5.0.
+
