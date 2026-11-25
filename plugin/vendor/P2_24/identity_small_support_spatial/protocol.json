@@ -1,0 +1,30 @@
+{
+  "version": "IF-05.first",
+  "phases": ["LH-safe on frozen IF-04 C1", "Cmax/Cmin/Cadd", "M0/M1 on Cadd"],
+  "fusion": "Only replace old winner conflict if the L winner's HSV distance is unavailable. Keep L high, both positives and competing H winner. Where L/H are both evaluable retain old fusion including abstention. Color-only medium stays out of reliable occurrence sides.",
+  "ranks": {
+    "slots_per_clip": 4,
+    "upper_pair_requests_per_clip": "4*(n-1)",
+    "upper_pair_requests_per_arm": 3140,
+    "Cmax": "Use the original IF-04 ranked first four and verified IF-04 catalog as historical maximum; rerun matching and downstream.",
+    "common_domain": "Only clear frames in IF-04 all-pairs v05 file; globally exclude query frames involved in any logged SIFT computation exception. Geometry failure is compared without positive support, HSV prefilter outcome is observable; references that lack comparable evidence spanning two positive windows after removing self are unrankable. Every reference excludes its own diagonal, so E differs by one only; each query has the same shared quality/error rule. Select unique near-duplicate representatives per 0.8s window for rank, preserve raw counts.",
+    "Cmin": "After at least 2 direct positive windows and comparable reference quality, rank ascending positive window count, then within-window deduplicated support count, then source index.",
+    "Cadd": "Take the Cmin seed. Rank remaining by number of newly uncovered positive windows, then newly uncovered deduplicated direct-positive frames versus C0 local direct positives and already selected references' screening support, then Cmin rank. If no unused gain, use remaining Cmin order. Proxy only, not trial labels or local pixels. Measure actual novelty using frozen match and admission after freezing rank.",
+    "admission": "Same IF-04 G feature groups and whole fallback, two exclusive positive windows excluding incumbent/alternate peers and near duplicates, Jaccard <= .50 against incumbents, max6 divided across base plus alternatives; no parent replacement or core promotion. Same old pair thresholds, per-reference 8 regions and per-ID 2 views. No frame labels, endpoint selection, or tuning. Internal unexplained structure is diagnostic only if same query keypoint identity and coordinate can be compared; no internal reward."
+  },
+  "spatial": {
+    "edge_fraction": 0.10,
+    "min_horizontal_px": 3.0,
+    "max_vertical_ratio": 0.5,
+    "minimum_adjacent_matches": 8,
+    "tracking_tolerance_px": 2.0,
+    "minimum_track_links": 2,
+    "prediction_horizon_s": 2.4,
+    "max_link_gap_s": 0.60,
+    "landmark_limit_per_clip": 96,
+    "continuity": "Old registered, motion-supported horizontal shift consistent with median adjacent verified SIFT inlier coordinates, quality floor 8, no accepted old transition or compatible geometry failure along offscreen hypothesis. SIFT coordinates are frozen first 16 matches if truncated; a missed point is unknown. Restricted turning-direction proxy from image shift, no natural pose claim.",
+    "memory": "Last observed reference and edge candidate; only compare predicted reentry after reversal and only count verified direct reobservation. Contradictory edge revokes one provisional prediction or leaves unknown; retain source observations and versioned relation log. Cut, dissolve, door/scene disagreement, moving object and ambiguity invalidate context; no unknown becomes absence. Real M1 context remains a proposal unless independently validated. For old videos no scene-level relabel from SIFT landmark evidence alone; same direct input as M0. Controlled fixtures may provide independent verified context and instance identity to test hypothesis restoration."
+  },
+  "query_cases": ["room_corridor_dev", "dissolve", "16455680"],
+  "evaluation": "Only after all predictions: compare strict exclusion (all arms' actual references, generation witnesses, HSV templates), ref+template-only development and frozen old development union. No new external material, models, parameter sweeps or Agent experiment."
+}

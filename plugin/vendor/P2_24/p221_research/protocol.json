@@ -1,0 +1,12 @@
+{
+  "arms": ["C0", "C1", "C2", "C3", "C4"],
+  "mechanisms": {"C0": [], "C1": ["catalog"], "C2": ["coarse"], "C3": ["outside"], "C4": ["catalog", "coarse", "outside"]},
+  "scope": "Use the frozen P2-20 scope and matched uniform phase. Late means the final third only when publicly requested.",
+  "sampling": {"analysis_width": 192, "analysis_height": 108, "catalog_zones": 3, "context_novelty": 0.037, "quiet_tail_context": 0.018, "local_foreground": 0.026, "visible_sharpness": 26.0, "coarse_high_residual": 26, "source_local_delta": 0.033, "neighborhood_in_coarse_steps": 2, "foreground_min_area": 12, "foreground_max_fraction": 0.21, "recurrence_strength_ratio": 0.60},
+  "catalog": "Quantize time into three public-range entrances; open scene/recurrence role candidates independently. Keep a context anchor for an active zone and a positive local or independently distinguishable view. A rank resolves redundant views only within the same measured role. Recurrence may protect multiple visually distinct episodes with direct anchors. No proposal replaces legacy evidence.",
+  "coarse": "Run an additive shadow nomination on the frozen coarse points that are not in M7. Compact foreground is locally measured against the coarse temporal median. Within each contiguous positive run retain temporal start/end and separate visually distinct projections backed by their own positive component. Only publicly recurring or scene-comparison goals activate this path.",
+  "outside": "After a public scope and D6/coarse/frozen roots exist, scan low-resolution original time within the rooted source range. A compact local interframe excursion inside a quiet coarse bracket, or a practical D6 temporal coverage gap in an active clip, can trigger exact original reads. Emit independent before, changed, or return witnesses only if justified; record quiet abstention. No E0 or catalogue changes.",
+  "strict_and_broad": "Strict scoring preserves all original role intervals. The separate broad fastener recurrence review concerns two visible horizontal representations in the public early and late thirds; score only original images confirmed by targeted independent review. No identity claim.",
+  "budget": "No fixed total pictures, routes, windows, or D1-D6 slots. Keep exact same-source frame deduplication. Count native interface acknowledgements before uniform comparison. Single image routes remain frozen from the B1+B2 baseline.",
+  "receiver": "Local native image receiver; no M9 inference."
+}
