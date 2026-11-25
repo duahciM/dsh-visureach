@@ -19,12 +19,13 @@ import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { installExtensions } from './integration.js'
+import { journal } from './journal.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const INDEXER = join(HERE, 'python', 'index_video.py')
 const EVIDENCE_WORKER = join(HERE, 'python', 'evidence.py')
 const EXCLUDED_SHA256 = '7f74580c0426420011267f3ad0c68bfa8a53c91b2ae74fa168912a72d4a201cf'
-const CACHE_VERSION = 'observer-index-v2'
+const CACHE_VERSION = 'observer-index-v3'
 const indexing = new Map()
 const archiveQueue = new Map()
 
@@ -334,7 +335,7 @@ async function indexVideo(config, videoPath, signal) {
   // degraded index must never be silently served as if it were a full scan.
   const fps = Number(config?.sampleFps) > 0 ? Number(config.sampleFps) : 5
   const limit = Number(config?.frameLimit) > 0 ? Number(config.frameLimit) : 0
-  const analysis = Boolean(config.integration !== false && config.semanticSearch !== false && config.semanticAssets)
+  const analysis = config.integration !== false && (config.researchNavigation !== false || (config.semanticSearch !== false && Boolean(config.semanticAssets)))
   const off = [...new Set(config.disabledDimensions ?? [])].sort()
   if (off.some((x) => !/^D[1-6]$/.test(x))) throw new Error('disabledDimensions must be drawn from D1 through D6')
   const folder = join(root, CACHE_VERSION, `${digest}-fps${fps}${limit > 0 ? `-cap${limit}` : ''}${analysis ? '-analysis' : ''}${off.length ? '-off' + off.join('') : ''}`)
@@ -588,6 +589,13 @@ const imageArraySchema = {
 }
 
 export function apply(ctx, config = {}) {
+  ctx.effect(() => {
+    const folder = join(cacheRoot(config), 'runtime-loads')
+    const marker = { version: '0.3.0', entry: fileURLToPath(import.meta.url), pid: process.pid,
+      executable: process.execPath, electron: process.versions.electron ?? null, at: new Date().toISOString() }
+    mkdir(folder, { recursive: true }).then(() => writeFile(join(folder, `${randomUUID()}.json`), JSON.stringify(marker), { flag: 'wx' })).catch(() => undefined)
+    return () => {}
+  })
   installExtensions(ctx, config, {
     bindingFor, selection, assertSource, evidence: listEvidence,
     imageArraySchema, imageBlock, attach: (bytes, name) => attachPng(ctx, bytes, name),
@@ -660,7 +668,9 @@ export function apply(ctx, config = {}) {
       }
       const { manifest, catalog, wave, reused } = await indexVideo(config, args.path, exec.signal)
       const agentId = exec.agent?.id
-      const sessionLedger = ledger(cacheRoot(config), agentId)
+      const root = cacheRoot(config)
+      const legacy = ledger(root, agentId)
+      const sessionLedger = config.activeJournal === false ? legacy : journal(root, legacy)
       // Archive whatever the previous sessions wrote before this one appends.
       await archiveLedgers(cacheRoot(config), `before-video-open:${manifest.video_sha256.slice(0, 8)}`)
         .catch(() => undefined)
@@ -1316,9 +1326,11 @@ export function apply(ctx, config = {}) {
       if (tool.length === 0 || purpose.length === 0 || supports.length === 0) {
         throw new Error('tool, purpose and supports are all required')
       }
+      const external_id = 'ext-' + randomUUID()
       await binding.ledger.append({
         at: new Date().toISOString(),
         event: 'external_computation',
+        external_id,
         video_sha256: binding.manifest.video_sha256,
         task_id: binding.taskId,
         tool,
@@ -1329,9 +1341,7 @@ export function apply(ctx, config = {}) {
       })
       return {
         recorded: true,
-        note: `Recorded external computation via ${tool}. It is filed separately from image `
-          + 'evidence and cannot be cited as an evidence_id. Declare any claim about action, '
-          + 'contact, intent or cause against a delivered frame instead.',
+        note: `External statement ${external_id} via ${tool}. Cite with claim_scope=external_statement. Execution and semantics are unverified.`,
       }
     },
   })

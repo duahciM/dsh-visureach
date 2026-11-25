@@ -91,10 +91,14 @@ def semantic(args):
     model = Clip(assets)
     vector = model.text([f"a photo of {args['query']}."])[0]
     scores = []
+    compared_regions = []
     for row in args["rows"]:
         image = Image.open(row["path"]).convert("RGB")
         boxes = semantic_regions(image, row["observations"], args["coordinates"])
         values = model.vision([tensor(image, b) for b, _ in boxes]) @ vector
+        compared_regions.append({"frame_id": row["frame_id"], "pts": row["pts"],
+                                  "regions": [{"analysis_xywh": list(box), "region_kind": k, "cosine": float(score)}
+                                              for (box, k), score in zip(boxes, values)]})
         i = int(np.argmax(values))
         box, kind = boxes[i]
         scores.append({"frame_id": row["frame_id"], "pts": row["pts"], "time_base": row["time_base"], "seconds": row["t"],
@@ -104,6 +108,7 @@ def semantic(args):
     offset, count = args["cursor"], args["page_size"]
     return {"status": "completed", "channel": "CLIP ViT-B/32 regional retrieval", "model_asset_signature": signature,
             "query": args["query"], "items": scores[offset:offset + count], "total_scored": len(scores),
+            "all_scores": scores, "compared_regions": compared_regions,
             "next_cursor": offset + count if offset + count < len(scores) else None,
             "scope": "Analysis-resolution image similarities, not identity, absence, actions or evidence citations."}
 
@@ -192,11 +197,15 @@ def crop(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=("pair", "semantic", "ocr", "text", "crop"))
+    parser.add_argument("operation", choices=("pair", "semantic", "ocr", "text", "crop", "research"))
     parser.add_argument("request", type=Path)
     args = parser.parse_args()
     request = json.loads(args.request.read_text(encoding="utf-8"))
-    fn = {"pair": inspect_pair, "semantic": semantic, "ocr": ocr, "text": get_text_track, "crop": crop}[args.operation]
+    if args.operation == "research":
+        from research_bridge import research
+        fn = research
+    else:
+        fn = {"pair": inspect_pair, "semantic": semantic, "ocr": ocr, "text": get_text_track, "crop": crop}[args.operation]
     try:
         result = fn(request)
     except (ImportError, FileNotFoundError) as exc:

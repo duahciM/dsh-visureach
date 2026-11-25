@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { saveResult, loadResult, resultPage, reference } from './proof.js'
 
 const text = { type: 'string' }
 const number = { type: 'number' }
@@ -29,6 +30,41 @@ function sameRegion(a, b) {
 
 const digest = (buffer) => createHash('sha256').update(buffer).digest('hex')
 
+function preview(value) {
+  const summary = { ...value }
+  for (const [name, field] of Object.entries(value)) {
+    if (Array.isArray(field) && field.length > 4) summary[name] = { count: field.length, preview: field.slice(0, 4) }
+  }
+  for (const name of ['candidates', 'comparisons', 'outside_catalogue', 'unfiltered_items', 'all_scores', 'compared_regions', 'all_verified_matches']) {
+    if (value[name]) summary[name] = { count: value[name].length }
+  }
+  if (value.figure2) {
+    delete summary.figure2
+    delete summary.figure1
+  }
+  if (value.recheck?.observations) summary.recheck = { ...value.recheck, observations: { count: value.recheck.observations.length } }
+  if (value.channels) {
+    const { sift, local, phase, photometry, hsv_total_variation, edge_xor_fraction_unregistered } = value.channels
+    summary.channels = { sift: { verified: sift.verified, inlier_count: sift.inlier_count, reason: sift.reason },
+      local: { state: local.state, region_count: local.regions.length, first_region: local.regions[0]?.bbox },
+      phase: { registration_valid: phase.registration_valid, dx: phase.dx, dy: phase.dy, residual_mad: phase.residual_mad },
+      photometry: { supported: photometry.supported, reason: photometry.reason }, hsv_total_variation, edge_xor_fraction_unregistered }
+  }
+  if (Array.isArray(value.items)) {
+    summary.items = value.items.slice(0, 4).map((row) => {
+      if (!row || typeof row !== 'object') return row
+      const select = { ...row }
+      if (Array.isArray(row.evidence)) select.evidence = row.evidence.slice(0, 2).map((item) => ({ dimension_id: item.dimension_id,
+        role: item.role, region_candidate: item.region_candidate, region_xywh_analysis: item.region_xywh_analysis,
+        evidence_root_ids: item.evidence_root_ids.slice(0, 2), status: item.status }))
+      if (select.evidence_ids?.length > 3) select.evidence_ids = { count: select.evidence_ids.length, first: select.evidence_ids.slice(0, 3) }
+      return select
+    })
+    summary.returned_in_full_result = value.items.length
+  }
+  return summary
+}
+
 export function installExtensions(ctx, config, backend) {
   if (config.integration === false) return
   const proofLocks = new Map()
@@ -43,8 +79,18 @@ export function installExtensions(ctx, config, backend) {
         try {
           await backend.assertSource(binding)
           const value = await execute(binding, args ?? {}, exec)
+          if (!output && name !== 'evidence_detail' && name !== 'evidence_reference') {
+            const kind = name === 'frame_ocr' && value.status === 'completed' ? 'ocr'
+              : name === 'video_text_search' && value.status === 'completed' ? value.channel : 'computed'
+            const full = await saveResult(binding, kind, value)
+            value.result_ref = full
+            if (name === 'video_text_search' && ['completed', 'unavailable'].includes(value.status)) {
+              value.track_ref = await saveResult(binding, 'track_metadata', { channel: value.channel, present: value.status === 'completed', stream: value.stream, reason: value.reason })
+            }
+          }
           await binding.ledger.append({ ...receipt, status: value.status ?? 'completed', duration_ms: Math.round(performance.now() - started) })
-          return value
+          return !output && config.compactEvidence !== false && !['evidence_detail', 'evidence_reference'].includes(name)
+            ? { ...preview(value), scope: value.scope ?? 'Source-bound tool result. Read full fields via evidence_detail.' } : value
         } catch (error) {
           await binding.ledger.append({ ...receipt, status: 'failed', error: String(error.message), duration_ms: Math.round(performance.now() - started) })
           throw error
@@ -76,6 +122,69 @@ export function installExtensions(ctx, config, backend) {
     if (matches.length !== 1) throw new Error('PTS is absent or ambiguous in this source.')
     const row = matches[0]
     return { pts, seconds: row.seconds, time_base: binding.manifest.time_base, source_frame: row.index }
+  }
+
+  tool('evidence_detail', 'Read any field of a saved tool result, losslessly and in pages. Start at path=[] and follow field names or array indices. No cumulative query limit.',
+    { result_ref: text, path: list(text), cursor: integer, page_size: integer }, ['result_ref'], async (b, a) => {
+      const data = await loadResult(b, a.result_ref)
+      return { result_ref: a.result_ref, source_sha256: data.source_sha256, channel: data.channel, ...resultPage(data.data, a) }
+    })
+
+  async function checkRefs(b, records, ids) {
+    const evidence = new Map(backend.evidence(records, b.manifest.video_sha256).map((row) => [row.evidence_id, row]))
+    return Promise.all(ids.map((id) => reference(b, records, evidence, id)))
+  }
+  tool('evidence_reference', 'Inspect citation type, source time, parent original and allowed support scope. Citation membership alone does not establish any claim.',
+    { ids: list(text) }, ['ids'], async (b, a) => ({ items: await checkRefs(b, await b.ledger.read(), a.ids) }))
+
+  async function research(b, a, exec) {
+    if (!b.manifest.analysis_path) return { status: 'dependency_missing', reason: 'Source index has no analysis raster.' }
+    return compute(b, exec, 'research', { catalog: b.manifest.catalog_path, analysis: b.manifest.analysis_path, ...a })
+  }
+
+  if (config.researchNavigation !== false) {
+    tool('relation_figure2', 'Inspect the P2-23 graph at a catalogue PTS, including measured image-region pairs and degree. Full graphs are stored for evidence_detail.',
+      { pts: integer }, ['pts'], (b, a, exec) => research(b, { action: 'figure2', pts: a.pts }, exec))
+    tool('change_triggers', 'Find source-linked change prompts from the P2-17 comparison chain. Shows investigated time brackets and abstentions without delivering images.',
+      range, [], async (b, a, exec) => {
+        const { lo, hi } = backend.selection(b, a.start, a.end)
+        const data = await research(b, { action: 'triggers', start: lo, end: hi }, exec)
+        return data.items ? { ...data, ...page(data.items, a) } : data
+      })
+    tool('change_recheck', 'Recheck one P2-17 trigger against actual original source frames at a range and density you choose. Returns local measurements; use source_resample independently for images.',
+      { trigger_result_ref: text, trigger_id: text, ...range, fps: number }, ['trigger_result_ref', 'trigger_id', 'start', 'end', 'fps'], async (b, a, exec) => {
+        if (!Number.isFinite(a.fps) || a.fps <= 0) throw new Error('Provide a positive finite fps.')
+        const { lo, hi } = backend.selection(b, a.start, a.end)
+        if (hi <= lo) throw new Error('Choose an interval within the source.')
+        const stored = await loadResult(b, a.trigger_result_ref)
+        const trigger = stored.data.candidates?.find((v) => v.id === a.trigger_id)
+        if (!trigger) throw new Error('Choose a trigger_id from the saved trigger query.')
+        const all = await backend.timeline(b, exec.signal)
+        const excluded = new Set([trigger.observation_a.pts, trigger.observation_c.pts])
+        let next = lo
+        const candidates = []
+        for (const f of all) {
+          if (f.seconds < lo || f.seconds > hi || excluded.has(f.pts) || f.seconds + 1e-9 < next) continue
+          candidates.push(f)
+          next = lo + (Math.floor((f.seconds - lo + 1e-9) * a.fps) + 1) / a.fps
+        }
+        const window = page(candidates, a)
+        const frames = []
+        for (const f of window.items) {
+          const path = await backend.native(b, { source_frame: f.index }, exec.signal)
+          frames.push({ path, source_frame: f.index, seconds: f.seconds, pts: f.pts, time_base: b.manifest.time_base })
+        }
+        const result = await research(b, { action: 'feedback', trigger, frames }, exec)
+        return { ...result, next_cursor: window.next_cursor, eligible_sampled_frames: window.total, requested_range: [lo, hi], requested_fps: a.fps }
+      })
+    tool('appearance_search', 'Compare one exact source anchor across the catalogue. Searches the whole requested source range by direct spatial correspondence, with no identity closure.',
+      { pts: integer, ...range }, ['pts'], async (b, a, exec) => {
+        const f = await exact(b, exec, a.pts)
+        const path = await backend.native(b, f, exec.signal)
+        const { lo, hi } = backend.selection(b, a.start, a.end)
+        const result = await research(b, { action: 'appearance', anchor: { ...f, path, png_sha256: digest(await readFile(path)) }, start: lo, end: hi }, exec)
+        return result.items ? { ...result, all_verified_matches: result.items, ...page(result.items, a) } : result
+      })
   }
 
   if (config.evidenceSearch !== false) tool('evidence_search',
@@ -152,10 +261,6 @@ export function installExtensions(ctx, config, backend) {
       if (result.channels == null) return result
       const output = { ...result, root, source_sha256: b.manifest.video_sha256, original, status: 'completed' }
       await b.ledger.append({ event: 'visual_pair', ...output, video_sha256: b.manifest.video_sha256, at: new Date().toISOString() })
-      if (!a.include_matches) {
-        const { inlier_pairs, ...sift } = output.channels.sift
-        output.channels.sift = { ...sift, complete_matches_in_ledger: inlier_pairs.length }
-      }
       return output
     })
 
@@ -191,13 +296,15 @@ export function installExtensions(ctx, config, backend) {
       const result = await compute(b, exec, 'text', { source: b.manifest.video_path, channel: a.channel,
         ffmpeg: backend.ffmpeg, ffprobe: backend.ffprobe, model: config.whisperModel, start: time.lo, end: time.hi })
       const items = result.items?.filter((r) => !a.query || r.text.toLowerCase().includes(a.query.toLowerCase()))
-      return { ...result, ...(items ? page(items, a) : {}), source_sha256: b.manifest.video_sha256, metadata_only: true }
+      return { ...result, ...(items ? page(items, a) : {}), unfiltered_items: result.items, source_sha256: b.manifest.video_sha256, metadata_only: true }
     })
 
   if (config.observationRecords !== false) tool('observation_record',
     'List, create or revise an observation. Direct claims cite evidence IDs delivered in this session and video. Revisions preserve the old record and require its current revision ID. Add records when they help the task, with no fixed observation workflow.',
     { action: { type: 'string', enum: ['list', 'create', 'revise'] }, observation_id: text, supersedes_revision: text, content: text,
-      kind: { type: 'string', enum: ['direct', 'inference', 'unknown', 'withdrawn'] }, evidence_ids: list(text), reason: text, cursor: integer, page_size: integer }, ['action'], async (b, a) => {
+      kind: { type: 'string', enum: ['direct', 'inference', 'unknown', 'withdrawn'] }, evidence_ids: list(text),
+      claim_scope: { type: 'string', enum: ['visual', 'visual_region', 'ocr_text', 'transcribed_audio', 'subtitle_text', 'stream_metadata', 'measurement', 'external_statement'] },
+      reason: text, cursor: integer, page_size: integer }, ['action'], async (b, a) => {
       const key = b.ledger.file
       const previous = proofLocks.get(key) ?? Promise.resolve()
       const next = previous.catch(() => undefined).then(async () => {
@@ -210,12 +317,15 @@ export function installExtensions(ctx, config, backend) {
           throw new Error('Revision requires the current revision ID and a reason. Read the record history first.')
         }
         if (!a.content?.trim() || !['direct', 'inference', 'unknown', 'withdrawn'].includes(a.kind)) throw new Error('A typed observation needs content and a valid kind.')
-        const evidence = new Map(backend.evidence(records, b.manifest.video_sha256).map((row) => [row.evidence_id, row]))
         const citations = [...new Set(a.evidence_ids ?? [])]
-        if ((a.kind === 'direct' && !citations.length) || citations.some((id) => !evidence.has(id))) throw new Error('Use delivered same-session original evidence IDs for visual citations.')
+        const refs = await checkRefs(b, records, citations)
+        const claim_scope = a.claim_scope ?? 'visual'
+        if (a.kind === 'direct' && (!refs.length || refs.some((r) => !r.allowed_scopes.includes(claim_scope)))) {
+          throw new Error(`Cited evidence type cannot directly support scope ${claim_scope}. Inspect evidence_reference or label an inference.`)
+        }
         const entry = { event: 'observation_revision', observation_id: a.action === 'revise' ? old.observation_id : randomUUID(),
           revision_id: randomUUID(), supersedes_revision: a.action === 'revise' ? old.revision_id : null,
-          kind: a.kind, content: a.content, evidence_ids: citations, reason: a.reason ?? null, task_id: b.taskId,
+          kind: a.kind, content: a.content, claim_scope, evidence_ids: citations, evidence_refs: refs, reason: a.reason ?? null, task_id: b.taskId,
           video_sha256: b.manifest.video_sha256, at: new Date().toISOString() }
         await b.ledger.append(entry)
         return entry
@@ -239,7 +349,13 @@ export function installExtensions(ctx, config, backend) {
         const items = []
         for (const [index, id] of ids.entries()) {
           const cite = evidence.get(id)
-          if (!cite) { items.push({ evidence_id: id, integrity: 'unknown_evidence_id' }); continue }
+          if (!cite) {
+            try {
+              const typed = await reference(b, records, evidence, id)
+              items.push({ evidence_id: id, ...typed, integrity: typed.integrity, original_verified: false })
+            } catch (error) { items.push({ evidence_id: id, integrity: 'unknown_or_invalid_evidence_id', reason: error.message }) }
+            continue
+          }
           const frame = await exact(b, exec, cite.pts)
           const out = join(temp, `${index}.png`)
           await backend.decode(b, frame.source_frame, out, exec.signal)
@@ -251,8 +367,9 @@ export function installExtensions(ctx, config, backend) {
               && width === b.manifest.probe.width && height === b.manifest.probe.height ? 'verified' : 'mismatch' })
         }
         const receipt = { event: 'claim_verification', revision_id: revision?.revision_id ?? null, items,
-          source_integrity: items.every((r) => r.integrity === 'verified') ? 'verified' : 'failed',
-          semantic_support: 'requires_independent_visual_review', video_sha256: b.manifest.video_sha256, at: new Date().toISOString() }
+          source_integrity: items.every((r) => r.integrity === 'verified') ? 'verified'
+            : items.some((r) => r.integrity === 'mismatch' || r.integrity === 'unknown_or_invalid_evidence_id') ? 'failed' : 'mixed_evidence_scope',
+          semantic_support: 'requires_independent_review', video_sha256: b.manifest.video_sha256, at: new Date().toISOString() }
         await b.ledger.append(receipt)
         return receipt
       } finally {
@@ -268,7 +385,11 @@ export function installExtensions(ctx, config, backend) {
       if (!parent) throw new Error('Use a same-session original evidence ID.')
       if (!Array.isArray(a.native_xywh) || a.native_xywh.length !== 4 || !a.native_xywh.every(Number.isSafeInteger)) throw new Error('Use integer native crop coordinates.')
       const scale = a.scale ?? 1
-      if (!Number.isFinite(scale) || scale < 1 || scale > 4 || !a.reason?.trim()) throw new Error('Provide a reason and an optional scale from 1 to 4.')
+    if (!Number.isFinite(scale) || scale < 1 || !a.reason?.trim()) throw new Error('Provide a reason and a finite scale of at least 1.')
+    const [, , w, h] = a.native_xywh
+    if (w * scale > 4096 || h * scale > 4096 || w * h * scale * scale > 12_000_000) {
+      throw new Error('Derived output exceeds the attachment envelope. Use a smaller crop or lower scale; original access is unchanged.')
+    }
       const frame = await exact(b, exec, parent.pts)
       const path = await backend.native(b, frame, exec.signal)
       if (digest(await readFile(path)) !== parent.png_sha256) throw new Error('Original does not match the parent image hash.')
@@ -290,4 +411,19 @@ export function installExtensions(ctx, config, backend) {
       }
     }, { schema: { type: 'object', properties: {description: text, images: backend.imageArraySchema}, required: ['description', 'images'] },
       render: (_, value) => [{ type: 'text', text: value.description }, ...value.images.map(backend.imageBlock)] })
+
+  if (config.observationRecords !== false) tool('observation_dispute',
+    'List or append a competing evidence interpretation on an immutable observation revision. It does not rewrite a finding. Use observation_record to revise after checking the alternatives.',
+    { revision_id: text, evidence_ids: list(text), reason: text, cursor: integer, page_size: integer }, ['revision_id'], async (b, a) => {
+      const records = (await b.ledger.read()).filter((r) => r.video_sha256 === b.manifest.video_sha256)
+      if (!records.some((row) => row.event === 'observation_revision' && row.revision_id === a.revision_id)) throw new Error('Unknown same-source revision.')
+      if (!a.reason) return page(records.filter((r) => r.event === 'observation_dispute' && r.revision_id === a.revision_id), a)
+      if (!a.evidence_ids?.length) throw new Error('Record what actual observations conflict with the revision.')
+      const refs = await checkRefs(b, records, [...new Set(a.evidence_ids)])
+      const row = { event: 'observation_dispute', dispute_id: randomUUID(), revision_id: a.revision_id,
+        state: 'unresolved', counter_evidence: refs, reason: a.reason, video_sha256: b.manifest.video_sha256,
+        task_id: b.taskId, at: new Date().toISOString() }
+      await b.ledger.append(row)
+      return row
+    })
 }
