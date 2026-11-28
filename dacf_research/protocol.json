@@ -1,0 +1,25 @@
+{
+  "identity":"DACF-2026-11-26-first",
+  "fps":5,
+  "analysis_width":320,
+  "maximum_gap_seconds":0.32,
+  "automatic": {"dwell_seconds":0.38,"within_gray":0.035,"between_gray":0.04,"minimum_sharpness":8,"prototypes":3},
+  "point_registration": {"minimum_local_prototypes":2,"grids":[[2,1],[3,2]]},
+  "smooth_seconds":[0.20,0.50,1.0],
+  "smooth_minimum_mass":0.75,
+  "numerical_epsilon":1e-7,
+  "direction_gray_deadband":0.003,
+  "gray_primary":true,
+  "support_caps":{"gray":0.15,"hsv":0.5,"edge":null,"clip":null,"sift":0.5},
+  "channel_basis": {
+    "gray":"fixed-grid normalized luma L1",
+    "hsv":"L1-normalized HSV histogram Hellinger",
+    "edge":"fractional Canny XOR on a common image grid",
+    "clip":"half chord distance on separately normalized whole-image vision embeddings, no prompt",
+    "sift":"conditional inlier-fraction complement, comparison-specific domain. Keep all pair geometry; do not use in metric path or group progress",
+    "aligned":"directional valid-overlap registered residual with optional held-out gain-offset. Domains may differ. Keep raw form and applicability, do not sum or divide into progress"
+  },
+  "group_reduction":"Median of valid distances within each common channel using at least two prototypes, skipping exact prototype self-pairs. Boundary point zero permitted only for identical rank in the metric endpoint distance, never used for scoring prototypes. Keep pair-level records.",
+  "selection":"One actual interior coarse sample per route and per pair. Time midpoint, gray anchor equal-distance, gray path midpoint, gray Gaussian multiscale medoid and two-domain local support are separate. Gray anchor nearest balance is a candidate even if no crossing; the intersection status is recorded separately. Secondary diagnostic all channels. No best channel chosen after evaluation.",
+  "evaluation":"Mechanical oracle, two known Phase 1 replay cases, reverse doorway and in-room pan return transfer diagnostics. All references used only after predictions. Manual anchor input frozen independently and separate. All labelled windows conservative 2D visibility; model understanding not implied."
+}

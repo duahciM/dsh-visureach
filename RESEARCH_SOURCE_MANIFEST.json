@@ -1,5 +1,13 @@
 {
   "files": {
+    "dacf_research/audit_phase1.py": "da2122e425cc71064d23123d7b1ac92806723372e2cd0c52c0cec956d1fbc2a0",
+    "dacf_research/evaluate.py": "77b97761c15416d33b1d6b144dbb1e78a45da431adb56d365f31a12f35126dd5",
+    "dacf_research/field.py": "b625adf47f461c65041552fc4f942d68e1034a19539cb9bca0aaf4e7d0adcbac",
+    "dacf_research/freeze.py": "cad1f570b032876d0cf4a185c5dc77b5ac99709342fd9d0a68543763d99b1720",
+    "dacf_research/prepare_inputs.py": "ad7ed999462e28bcccaa0e9897b3947103f3ada00eee64aa686bcae262f94998",
+    "dacf_research/protocol.json": "c55a50d6db4a8fca48a559a45124c3a88a5ca3feebb2ff6aa2240e26a1142c40",
+    "dacf_research/run.py": "c3df46559484a54ea83d8830ce11968d92e58724be5ec7319244ebcd808415fc",
+    "dacf_research/verify_outputs.py": "05f2f8e4dd2c93d55d4f80d509883ce4952bd47f37b595438b3806cc712c97ca",
     "evidenweft_phase1/adjudicate.py": "d41a1a621c161f55a914bacfb62004d5bf7ad2508baeadba5cfe0e378f38ba8c",
     "evidenweft_phase1/control_plugin.mjs": "8a43db3e729c869106c5f454c1f4af6557dc8758df1a08cb2c21138991739269",
     "evidenweft_phase1/control_plugin_retry.mjs": "dd9bdfc4e83eced092c08e2092b14968d1ef2344ae01fdfb945f38935d17cc03",
@@ -12,6 +20,7 @@
     "evidenweft_phase1/frozen/visureach/process_lock.js": "f00765ae7a52c1faf35425d52e503b9324a01384a18c10884965d0e1c8f650f4",
     "evidenweft_phase1/frozen/visureach/proof.js": "5990c46158e3a178ee97adc24e2386d5986d9ea8be3503b20d6e8b421e9ab4b3",
     "evidenweft_phase1/frozen/visureach/stream_contract.schema.json": "aeff5ca1acc667a0c57d1d22de8c244a892931b85434f119cc5c82a556aa0d4d",
+    "evidenweft_phase1/frozen/visureach/vendor/P2_24/p14_scene_prototypes/protocol.json": "26e630f3f78e37088a82819fe6813cc9d0dea248985779f7e5c29ed3b4977047",
     "evidenweft_phase1/inventory.py": "8d62a3a927ffe132de96e551be41efd4b6d399a0b802add73051788518c8988b",
     "evidenweft_phase1/measure.py": "80a80581d42cc2202f6c657ef28d6d4f5961a5ac9537e327d9a11406bb86de29",
     "evidenweft_phase1/prepare.py": "4ebf15c6bbd284aaa870825b5326c567d5f3aa94f687bbe838089a0c5590d2a1",
