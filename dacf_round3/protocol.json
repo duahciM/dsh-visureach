@@ -1,0 +1,23 @@
+{
+  "study": "DACF-AMR-3",
+  "equal_new_originals": 3,
+  "safety_stop_originals": 6,
+  "kde_relative_scales": [0.04, 0.08, 0.16],
+  "natural_gap_fraction": 0.12,
+  "minimum_midpoint_resolution_coarse_fraction": 0.5,
+  "independent_real": "6.mp4, first by name among preselected real camera/laptop sets; source SHA must be new to R1/R2/PHASE1",
+  "axes": ["gray", "hsv", "edge", "clip"],
+  "arms": {
+    "E0": "R2 frozen paired leaves in ID order, temporal midpoint of first uncovered leaf, revisit only after all leaves with unseen interior have been proposed. The complete original R2 readback remains a separately priced exhaustive reference.",
+    "E1": "farthest on exact source time, only actual time metadata",
+    "E2": "least observed Gaussian evidence density on exact source time; report three independent scales, middle preselected",
+    "E3": "one independent trajectory per raw cumulative channel, farthest in each observed component. If a proposed location lies on an unresolved edge, use its temporal midpoint as an explicitly unlocated acquisition probe",
+    "E4": "one independent trajectory per cumulative channel. Rank by evidence KDE at measured coordinates or endpoint densities as an unresolved probe diagnostic; middle scale preselected",
+    "E5": "E3 restricted to R2 paired leaf spans, with exact midpoint probes allowed even when only endpoints were coarsely measured",
+    "E6": "E5 coverage priority chooses a bracket. Inside it cycle precommitted operators: anchor crossing bracket, original multiscale peak/valley, coverage. If the requested evidence is absent within the chosen bracket, log fallback to coverage. No numeric cross-channel fusion."
+  },
+  "naturally_stop": "No eligible candidate, or largest actionable coverage gap <= 12% full positive channel span (for E0 no pending untouched leaves). Stop state recorded at its first occurrence, equal arm may continue; otherwise record six-frame observation ceiling as censored. Time and change units never mixed.",
+  "two_endpoint_rule": "Chord is measured only between endpoints. Never interpolate intermediate change or treat proxy midpoint as observed. Acquire exact actual PTS, update split paths, and keep parent geometry. Missing edges split cumulative components; zero is valid but has zero change-space gain.",
+  "amr": "All R2 roots kept with historical children. E5/E6 gray probe splits the chosen temporal leaf by actual PTS. Separate optional spatial subdivision uses native grid cells and held-out correspondence. Local samples and projected relations are separately scoped. No default plugin modification.",
+  "references": "R1/R2 records and source-derived independent roles only consulted by scorer after prediction, no full-video decoded evaluation images available to predictor. No model calls."
+}
