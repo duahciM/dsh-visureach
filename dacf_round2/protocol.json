@@ -1,0 +1,15 @@
+{
+  "id":"DACF-round2-investigation",
+  "predictor_inputs":"Frozen D1-D6 nominees and 5 Hz source pool, plus pixels only. All score windows separate.",
+  "triggers":["gap between successive nominated frames with one or more nonnominated coarse samples","registered D2 comparison directly joins successive seeds","open flank before first or after last nomination"],
+  "prototype_neighborhood":{"samples":3,"radius_s":0.65,"direction":"outward from each nomination seed; a newly witnessed interior state uses its validated local support triplet"},
+  "appearance_margin":{"hsv":0.05,"clip":0.018},
+  "appearance_rule":"Within each channel separately, cross-prototype median must exceed BOTH internal medians by the channel minimum. The direct seed distance must be at least half the cross median. A single known original nomination is insufficient for this group test.",
+  "local_rule":"Actual D2 registered comparison whose two parents include both seed frame IDs; no minimum global difference. D1/D3 region and relationship records are retained but role names alone do not establish a state.",
+  "uncertain_rule":"Weak overlap/registration or low sharpness within a gap makes an unknown investigation area only if actual adjacent gray MAD exceeds frozen P1 activity floor 0.003.",
+  "split_rule":"Reuse nominated intermediate states when both child intervals have independent state evidence. For a gap with five or more interior samples, test triplets in chronological order; accept the first whose internal HSV or CLIP variation is below half that channel margin and whose left and right child are distinguishable. Preserve the parent and stop after two split levels.",
+  "revisit_rule":"Within a channel, nonconsecutive state candidate has a direct median and seed distance both within that channel margin and an intervening distinguishable anchor. Output a candidate recurrence only.",
+  "full_audit":"Region coverage uses union of the actual paired leaf spans. Also report including weak one-sided/unknown spans, plus breadth and unsupported range. Every nomination is carried through.",
+  "reread":"Offline acceptance only: sequential independent exact decode, save all actual original frames falling in the paired union. Compare region-time and unique frame count to full source. Agent access and delivery policies remain unchanged.",
+  "evaluation":"Run all nine frozen development clips first, then hash-disjoint independent rolling capture and independent synthetic material. No protocol changes between. Do not evaluate unannotated spans as false positives. Static is known zero-change control. Equal single-frame probes are secondary."
+}
