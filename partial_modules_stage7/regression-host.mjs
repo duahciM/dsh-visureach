@@ -5,7 +5,7 @@ import {resolve} from 'node:path'
 import {apply as official} from '../video_observer_offline060/index.js'
 import {apply as amr} from '../dacf_round6/persistent.mjs'
 
-const study=resolve('partial_modules_stage6')
+const study=resolve('partial_modules_stage7')
 const out=resolve(study,process.argv[2]??'host')
 assert.equal(resolve(out,'..'),study)
 await mkdir(out)
