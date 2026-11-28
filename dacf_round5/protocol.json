@@ -1,0 +1,12 @@
+{
+  "study":"Round 5 full offline chain",
+  "arms":{"A0":"complete VisuReach offline","A1":"same complete offline + flat intervals","A2":"same complete offline + tree and explicit refinement"},
+  "sources":{"fixture":{"repeats":2,"origin":"new generated controlled video","fps":25},"arm_clip":{"repeats":1,"origin":"user supplied 4.mp4, source bytes checked against DACF study sources"}},
+  "provider":{"provider":"deepseek-account","model":"deepseek-flash","reasoningEffort":"max","maxTokens":32768},
+  "watchdog_seconds":600,
+  "shared_rights":"all VisuReach 0.6.0 offline tools, same native originals and allowlisted video. No autonomous tool requirement or cumulative viewing cap.",
+  "automatic":"S0 remains the conservative preset. S1 exposes an alternative leaf-local stop hint using R4 rules. Hints never gate reads or refinement.",
+  "append_diagnostic":"Build a new lossless clip preserving an exact historical prefix. Freeze original paired interval and coarse path. Measure the unrelated synthetic tail at separate 5 Hz before adding its variation to the global denominator. Keep boundary jump separate, and use a matched zero-change tail. Recheck the same prefix-local rule.",
+  "references":"Scoring references are separate files never sent to Tool context or Agent. Label exact PTS hits and semantic evidence independently.",
+  "seed":2026112705
+}

@@ -1,0 +1,13 @@
+{
+  "study": "P2-15 cold-start evidence discovery",
+  "date": "2026-11-21",
+  "baseline": "if17_research_20261120/P2_13",
+  "arms": ["R0","R1","R2","R3","R4","R5","R5_no_semantic","R4_noise","R5_noise"],
+  "limits": {"distinct_reads":12,"initial_catalog_reads":6,"windows":2,"frames_per_window":3,"max_window_seconds":2.25,"max_window_fps":8,"metadata_page_max":12},
+  "semantics": {"crop_limit":5,"nouns_per_crop":3,"min_cosine":0.19,"relation_nodes":5,"min_center_separation_fraction":0.095,"max_edge_overlap_for_separation":0.02},
+  "added_cases": {"f01":"frozen IF09 candidate pixels with unchanged independent nomination rules","fresh":"new locally found source, 2 fps frozen candidate pool, 30 s analysis windows"},
+  "noise": {"object_drop":0.35,"wrong_label":0.15,"edge_reverse":0.2,"untrusted_identity_link":0.25,"seed":"P215-v1"},
+  "reference_contract": "Exact verified points or source spans, separate from prediction. Out-of-reference reads are unjudged unless explicitly negative. No absence or identity is inferred.",
+  "control": "Same unchanged source-bound reader, byte-preserving native PNG item handoff and distinct-image/real-window ceilings. No use of the source evaluation appendix by inference.",
+  "weights": "Rank channels independently, fuse ranks without duplicate-root votes. Fixed before prediction. Role scheduling is R5-only and uses registrable view evidence, query terms and order constraints, never evaluator ranges."
+}

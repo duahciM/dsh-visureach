@@ -1,0 +1,20 @@
+{
+  "version": "v0.8-three-direct-edges-one-C-run",
+  "arms": {"A":"frozen v06-full (also v07-B)","B":"three-frame plus local closure diagnostics; byte-identical A predictions", "C":"actual v06 pipeline with only original candidate-core qualification gate, no replacements"},
+  "offsets_s": [0.4,0.8,1.6],
+  "time_tolerance_s": 0.15,
+  "temporal_selection": "nearest actual PTS separately before/after center to each fixed offset; ties earlier PTS; distinct source frames and ordered t1<t2<t3; no boundary wrapping, duplicated input or best-match search",
+  "positive_edge": "unchanged actual v06 matrix: (verified SIFT and HSV<=0.5) OR (HSV<=0.12 and gray MAD<=0.035); every one of12/23/13 is its own actual direct record; quality separate, never infer13 transitively",
+  "triplet_states": "closed=all3 direct supported; open_bridge=center supports both endpoints but endpoints lack direct support; single_side=only one center edge supported; insufficient=others; unavailable=missing/tolerance/order/duplicate source frame; none means insufficient, never different scene",
+  "quality": "record all3 original sharpness/contrast; do not add a new neighbor-quality veto to original Pij; original center/core quality conditions unchanged",
+  "near_duplicate": "diagnostic only: existing v06 HSV<=0.04 AND gray<=0.02 per edge; do not equate different timestamps with independent views or change C gate",
+  "C_core_gate": "each original v06 candidate reference retained iff >=1 evaluable scale is closed; unavailable/all-not-closed rejected as core only; keep samples closed on one scale but open on another with explicit conflict flag; never select replacement refs",
+  "C_candidate_availability": "original candidate members>=4 and span>=0.4 unchanged; after gate need >=2 retained refs spanning>=original0.4s, each with direct nonself support from another retained ref; otherwise unavailable. This is the locked minimum sufficient retained-reference definition",
+  "C_downstream": "same v06 associate_candidates (one pass), frozen core view grouping, recognize, one bounded extend, refine, v05 deliver/choose budget8, V/uniform controls and native source PNG. No v07 merge/split proposals, no added regional threshold, core promotion, replacement, manual IDs or tuned thresholds",
+  "local_diagnostic": "all evaluable triplet edges need full coordinates. Reuse verified v07 full pair records, validate keypoint IDs against same fresh frozen-image SIFT detection and reciprocal pairs; missing pairs use same v07/P1.4 full_pair function and canonical seed, verify frozen old metrics/prefix. Quarantine disagreements. Global HSV/gray is never local geometry",
+  "local_closure": "align center-frame keypoint ID in2->1 and2->3; exact three-edge closure only if resulting endpoint featureIDs are an actual1->3 match. Frame-qualified IDs, coordinate/descriptor fingerprints; separate composition residual from exact feature loop; per-cell4x4 summaries and missing reasons; diagnostic only",
+  "geometry_diagnostic_tolerance_px": 3.0,
+  "resample": "each of15 clips, A/B and C fresh original-source10fps query: first automatic coarse bracket +/-0.5s, else middle third; A/B same predictions share one actual physical read, record both arm refs; C independently re-read. Existing v05 resample limits160 candidates/8frames unchanged",
+  "evaluation": "only after all B/C predictions: generator pure/mixed labels for dissolve/edge; original reviewed A/B/same_scene points and unchanged first-chronological transition reference. Fair pair subset excludes union old/new cores and old prototypes; recompute A denominator. Report per scale, unavailable, core/noncore, mixed and normal with exact denominators; no best-IoU candidate selection",
+  "budget": "one B pass, one fixed C prediction pass for all15 regardless B accuracy; no VLM/Agent/new model/training/parameter sweeps/v0.9. C runs even with no cores/unknown/failure outcomes; stop only on concrete technical impossibility and retain failures"
+}

@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Video observer",
+    "description": "Index a local video into a keyframe catalogue, then let an image-capable Agent query candidates, read original frames at native resolution, and resample the source video for verifiable evidence.",
+    "detail": "docs/DETAIL.md"
+  }
+}

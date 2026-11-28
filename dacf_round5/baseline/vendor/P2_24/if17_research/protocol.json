@@ -1,0 +1,8 @@
+{
+  "checkpoint":"CP-IF16 / IF-17",
+  "P2_13":{"pool":"Frozen IF16 N1 and IF15 pools, 9 clips","limits_on_catalog_frame_count":null,"dimension_slots":null,"soft_neighbor_seconds":0.6,"export_all_nominated_native_rgb":true},
+  "P2_14":{"case":"new_4740e05f","core_seconds":30,"padded_each_side_seconds":5,"recompute_using_frozen_IF16_nominators":true,"limits_on_catalog_frame_count":null},
+  "P3_08":{"case":"new_6a8c74a6","historical_arm":"N2","provider":"deepseek-account","model":"deepseek-flash","reasoningEffort":"off","maxTokens":1800,"common_first_attachment":"exact frozen P3-07 N2 montage","changed_variable":"text ledger of chronological ordinals, source seconds, integer original PTS and inter-tile gaps","windows_shared_between_arms":2,"width_s":[0.2,1.1],"reader_fps":10,"max_return_images_per_read":8,"reply_checkpoints":["first","after","final"],"route_failure":"preserve receipt, finish independent stages and skip other providers"},
+  "image_order":"chronological by source PTS; row-major within each sheet; native orientation",
+  "scope":"Same frozen development data; no threshold sweep, new model, production scene identity or new fixed-budget selector."
+}

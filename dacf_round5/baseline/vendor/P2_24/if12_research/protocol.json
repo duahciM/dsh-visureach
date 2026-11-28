@@ -1,0 +1,9 @@
+{
+  "version":"IF12 first fixed pass",
+  "replay":{"absolute_tolerance":1e-9,"relative_tolerance":1e-9,"all_cases":true},
+  "research":{"min_direct_points":12,"min_match_fraction":0.42,"max_small_hull_fraction":0.055,"min_tight_fraction":0.6,"fit_radius_px":36,"max_neighbor_s":0.62,"minimum_segment_px":16,"max_segment_px":78,"line_strip_px":7,"max_component_area_fraction":0.12},
+  "query":{"inject_cap":2,"minimum_gap_s":2.2,"gap_margin_s":0.55,"min_registered_mad":0.03,"read_budget":2,"seconds":1.1,"fps":10,"return_budget":8},
+  "identity_seen_development":["dissolve","room_corridor_dev"],
+  "p3":{"provider":"deepseek-account","model":"deepseek-flash","reasoningEffort":"off","maxTokens":1800,"case":"F01","initial_arm":"K_roles","max_windows":2,"min_window":0.2,"max_window":1.1,"fps":10,"max_images":8},
+  "policy":"No calibration on manual review. I0 unchanged. I1 replaces investigation admission only; I2 replaces component proposals only; I3 combines them. B is a scheduling hint. Q1 replaces existing coverage fallbacks with data-supported gap proposals under the same offer cap. Q2 conditional on Q1 coverage and allocation miss. No silent fallback, model or threshold replacement."
+}

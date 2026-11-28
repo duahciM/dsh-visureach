@@ -1,0 +1,46 @@
+{
+  "scope": "First locked CP-IF15 run over 9 frozen clips. G3 supplied as real recording.",
+  "same_pool": "IF15 P2 frames.json, exact original indices and timestamps",
+  "budget": 8,
+  "modules": ["D1","D2","D3","D4","D5","D6"],
+  "local": {
+    "legacy_component_config": "if09_research/protocol.json#P2",
+    "neighbor_offset": 4,
+    "minimum_comparisons": 3,
+    "max_registration_px": 12,
+    "min_phase": 0.15,
+    "border_px": 3,
+    "minimum_compactness": 0.30,
+    "max_region_fraction": 0.025,
+    "maximum_regions_per_frame": 3,
+    "nearby_seconds": 0.8,
+    "context_edge_distance_px": 28,
+    "bracket_max_s": 1.3,
+    "soft_group_seconds": 0.6
+  },
+  "selector": {
+    "sequence": ["D1","D1","D2","D3","D4","D5"],
+    "at_most_one_per_role_instance": true,
+    "keep_endpoint_anchors": true,
+    "fill": "farthest first among D6, then all surviving nominations, with temporal tie break",
+    "priority": "One ledger per dimension; use its own strength and footprints. Coverage endpoints are reserved. D1's second slot prefers another temporal neighborhood. Protect the first regional slot if supported. Extra mentions consume no slots and are never a tie-break vote."
+  },
+  "n3": {
+    "max_windows": 2,
+    "width_s": 1.1,
+    "fps": 10,
+    "companion_control": "augmented uniform and frozen V over identical union of newly decoded candidates",
+    "priority": "isolated regional observation with weak coverage, disjoint second proposal or largest initial gap",
+    "m0_decode": "exact ffprobe-index RGB; each window old full-reader sequential, not a seek benchmark"
+  },
+  "p2_12":{"core_seconds":30,"each_side_overlap_seconds":5,"workflow_per_core":4,"window_analysis_uses_frozen_pool":true},
+  "p3": {
+    "gate": "N2 must deliver a manually verified independent visible role absent from every available N0 eight-frame arm in that same clip",
+    "max_case_count": 1,
+    "baseline_order": ["uniform","K_IF11_shadow","K_motion_only","V","relation"],
+    "models": ["deepseek-account/deepseek-flash"],
+    "queries": 2,
+    "score_checkpoints": ["first","after","final"],
+    "dual_review": "Two detached blind scoring sessions with opposite order, disagreements retained and adjudicated manually on source evidence."
+  }
+}

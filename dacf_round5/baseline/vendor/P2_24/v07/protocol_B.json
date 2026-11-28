@@ -1,0 +1,20 @@
+{
+  "version": "v0.7-regional-diagnostic-B-first-pass",
+  "arms": "A=frozen v06-full; B=regional evidence only, prediction/keyframe/interval JSON copied byte-for-byte from A; C gated after B and never inferred from co-location alone",
+  "scope": "all15 known clips; every coarse frame and every frozen v06 core ref, excluding self; full core-core pairs included; prioritize main92 frames/all44 conflicts14 unresolved but do not omit remaining frames or negatives",
+  "coordinates": "inspect actual v05 JSONL. Reuse complete old inliers; recompute truncated needed pairs with byte-unchanged P1.4 sift_pair and same canonical i:j seed. Reproduction must agree verified/reason/count/ratio/coverage/homography and retained prefix within1e-6. Mismatch quarantined, not silently substituted",
+  "grid": [4,4],
+  "descriptor": "same cv2 SIFT nfeatures600 and frozen feature parameters, same frozen grayscale pixels; matching across arbitrary image positions, grid only aggregates",
+  "feature_ids": "reconstruct reciprocal ratio-test IDs in deterministic original order; store query/ref keypoint IDs and original coordinate pairs; dedup unique query IDs plus conservative 1px spatial sites across refs/view units; no repeated prototype votes",
+  "regional_support": "verified reproducible local geometry only; global HSV/gray support retained separately, never described as regional probability or pixel ownership",
+  "region_fields": "group unique keypoints/sites, source cores/view units, effective detected sites, support fraction, convex-hull coverage of matched sites, unknown/quality reasons; same-cell and same-keypoint overlap separately",
+  "diagnostic_min_sites": 8,
+  "diagnostic_shared_sites": 4,
+  "diagnostic_overlap_ratio": 0.2,
+  "reprojection_consistency_px": 3.0,
+  "interpretation": "five explicit competing hypotheses: within-ID mixed cores, duplicate IDs, shared/common background, real view-transition, unknown. None proven by overlap alone. No-match never different scene. No feature training or VLM",
+  "candidate_rules": "only keep/merge_candidate/split_candidate/ambiguous proposals at B. Inspect distributed reciprocal evidence, multiple core/time sources, external overlaps, internal subgroups and contradictions before deciding any C rule. No threshold sweep against labels",
+  "proposal_only_thresholds": {"broad_hull_each":0.15,"minimum_cross_core_covered_refs_each":2,"minimum_repeated_query_frames":3,"minimum_query_span_s":0.4,"minimum_pair_exclusive_sites":8,"minimum_pair_exclusive_cells":4,"note":"merge_candidate screening only, never a safe merge certificate; generic background and internal mixture still unresolved"},
+  "evaluation": "existing references used only for post-diagnostic evaluation; no new scene truth injected into matches or proposals. A/B predictions must be byte-identical. All44 conflict rows and14 unresolved prioritized; coverage/abstention and reviewed same/different pairs with original common denominators preserved",
+  "budget": "one spatial diagnostic pass; needed pairs only, full coordinate sets no truncation; all-frame overlays and selected native-source overlays; at most one C revision if safe, otherwise explicit B stop; selector budget8 frozen; no Agent calls"
+}
