@@ -4,7 +4,7 @@
 [![Research Stage 8](https://img.shields.io/badge/research-stage%208-5865F2)](https://github.com/duahciM/dsh-visureach/releases/tag/modules-stage8)
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-VisuReach 是 DeepSeek Harness（DSH）的离线视频观察插件。它让图像模型先定位值得关注的片段，再按需读取原图、比较局部证据并核验观察结论。适合查找短事件、比较前后状态和记录可复查的视觉依据。稳定安装版是 **0.6.0**，阶段八源码和 AMR 研究配置另有预发布。
+VisuReach 是 DeepSeek Harness（DSH）的离线视频观察插件。它让图像模型先定位值得关注的片段，再按需读取原图、比较局部证据并核验观察结论。适合查找短事件、比较前后状态和记录可复查的视觉依据。主分支存放 **0.6.0** 稳定插件。阶段八源码和 AMR 研究配置见预发布与 [Archive 的 DSH 插件专区](https://github.com/duahciM/EvidenWeft-Archive/tree/main/dsh-plugin)。
 
 ## 核心能力
 
@@ -95,8 +95,6 @@ Node.js 负责工具接口、会话和证据收据，Python 与 FFmpeg 负责索
 |---|---|
 | [video_observer_offline060/](video_observer_offline060/) | 稳定离线插件源码、配置模板和指南 |
 | [python/](video_observer_offline060/python/) · [vendor/](video_observer_offline060/vendor/) | 视频索引、解码和随插件交付的算法 |
-| [dacf_round6/](dacf_round6/) · [dacf_round7/](dacf_round7/) | 可选 AMR 研究工具与说明 |
-| [partial_modules_stage8/](partial_modules_stage8/) | 最新研究入口及回源实验 |
 
 ## 测试、引用与参考
 
