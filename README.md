@@ -1,7 +1,7 @@
-# VisuReach for DeepSeek Harness
+# dsh-visureach
 
-VisuReach 0.6.0 provides offline video observation with independent
-nominations, exact original reads, scoped evidence and revisable observations.
+Current frozen research source: **Offline study phase 1**. Earlier snapshots are tagged in [Releases](https://github.com/duahciM/dsh-visureach/releases). Older modules still imported by these sources remain as dependencies.
 
-Download the [current installation package](https://github.com/duahciM/dsh-visureach/releases/latest) and follow the [0.6.0 installation and usage guide](plugin/docs/V060.md).
-Each earlier version has its own [release](https://github.com/duahciM/dsh-visureach/releases).
+Stable plugin 0.6.0 installation stays available from [its original release](https://github.com/duahciM/dsh-visureach/releases/tag/v0.6.0). The integration source is in [video_observer_offline060](video_observer_offline060/).
+
+[Experiment data and reports](https://github.com/duahciM/EvidenWeft-Archive/tree/main/post-0.6.0)

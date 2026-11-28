@@ -1,0 +1,20 @@
+{
+  "route": {"provider":"deepseek-account","model":"deepseek-flash","reasoningEffort":"max","maxTokens":32768},
+  "seed": 2026112601,
+  "workers": 3,
+  "repetitions": 2,
+  "coarse_fps": 5,
+  "offline_counts": [8,16,24,32,"inventory"],
+  "arms": {"A0":"equal-cardinality uniform in the same coarse pool + common tools","A1":"all unique EvidenWeft nominees + common tools","A2":"same A1 nominees + actual VisuReach evidence organization and retrieval"},
+  "common_tools": ["video_open","catalog_search","observation_goal","delivery_request","source_resample","evidence_list"],
+  "source_access": "Each session is allowlisted to exactly its input. Exact integer PTS and caller-chosen source ranges/fps/count are open in every arm. No cumulative image or tool budget.",
+  "task": "Describe the visible sequence from the opening to the ending. Use actual original frames to check useful changes, what is visible together or at different times, and the relation to fixed features where relevant. Describe time as precisely as your evidence allows. Keep unobserved intervals, possible explanations, and established visual facts distinct.",
+  "answer": "Return one JSON object with facts (array of objects with claim, kind direct|inference, and evidence_ids using actual image citation IDs), open_questions (array of objects with stable id and question), and summary. You choose the tools, observation precision and stopping point.",
+  "follow": "Revisit any material unresolved questions or possible errors as you judge useful. Keep prior findings you still consider correct, and revise where the evidence warrants. Add prior_questions (array with the same prior id, state resolved|partial|open, answer, and actual evidence_ids). Give a final answer in the same format and label newly discovered questions separately by new IDs.",
+  "watchdog_seconds_per_turn": 540,
+  "retry": "At most one isolated repeat for complete transport or provider failure. Distinguish the locked first attempts, technical repeats and substantive partial answers. Retain costs and logs for all attempts.",
+  "sources": {
+    "bench": {"file":"plugin_offline/inputs/scene04.mp4","sha256":"b5b0822a291cb4758396446fa1d7d7b3dace42eeff71ac81aa494b083bc4242f","public_name":"video-a.mp4"},
+    "doorway": {"file":"C:/Users/Administrator/Desktop/视觉插件/素材/12.mp4","sha256":"de7fb65a6939702221871f6e879c98fd040f159db25bdda53c8df3be90536ba0","public_name":"video-b.mp4"}
+  }
+}
