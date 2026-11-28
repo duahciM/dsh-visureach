@@ -1,0 +1,61 @@
+{
+  "route": {"provider":"deepseek-account","model":"deepseek-flash","reasoningEffort":"max","maxTokens":32768},
+  "source":"dacf_round6/independent/source.mp4",
+  "seed": 700127,
+  "watchdog_seconds": 300,
+  "groups": [
+    ["observer_guide","video_open","observation_goal","catalog_search","delivery_request","source_resample"],
+    ["wave_query","observation_coverage","change_search","change_triggers","change_recheck","amr_query","amr_refine"],
+    ["evidence_search","evidence_graph","evidence_routes","relation_figure2","visual_compare","evidence_detail"],
+    ["appearance_search","object_candidate","compare_object_views","state_chain","evidence_crop"],
+    ["evidence_list","evidence_reference","external_source","frame_ocr","semantic_search","video_text_search"],
+    ["observation_record","observation_dispute","observation_review","claim_verify"]
+  ],
+  "rubric": {
+    "architecture":["prepared/catalogue vs session/on-demand work", "independent nominations vs second-stage brackets", "time vs cumulative measured change", "actual directory/wave/Figure 1/Figure 2/tree relationships", "live source access and receipts", "reuse versus new calculation", "scope of automatic stop", "mathematical limits and unknown"],
+    "explanation":["observer problem and purpose", "genuine nearby tool distinction", "supported result", "explicit capability boundary"],
+    "scenario":["novel question, evidence topology or tool action", "functional match", "achievable preconditions and result", "reason to use this tool over an alternative", "supported scope and unknown", "actual observer value"],
+    "selection":["fit to the evidence problem", "legal branching/data flow and parameter values or guarded placeholders", "source or evidence boundary", "justified stopping or acceptable alternative"],
+    "labels": {"1":"specific and correct", "0":"absent, contradictory or actually invalid", "null":"cannot determine from supplied text or verified function"},
+    "originality":"A mere swap of object, color, time or surface against original or revised guide does not pass. Compare the uncertainty, inputs and provenance flow. Explicit misuse and skip scenarios must have a meaningful fit or boundary, not a gratuitous violation.",
+    "miss_categories":["existence","purpose","prepared_vs_compute","neighbor_difference","overestimate","underestimate","parameters","result","navigation_as_fact","unknown_as_negative","refine_after_stop","skip_judgment"],
+    "sealed_before_first_prediction":true,
+    "comparison_limits":"Small purposive tasks with same model, one independent session per shard/form and no learning feedback. Architecture is an exact shared probe. Scenarios and matching use different surface/structure banks, so differences are descriptive, not a causal score estimate. Missing or truncated answers are marked separately."
+  },
+  "architecture_questions":[
+    "What has already been done before a video observation begins, and what still happens on open or on request?",
+    "Which evidence can already be queried, and what requires new calculation or original images?",
+    "What is different about the initial keyframe nominations and the later investigation of possible transitions?",
+    "How do the keyframe catalogue, wave, Figure 1, Figure 2, change tree and original video relate? Explain cumulative change versus source seconds.",
+    "How would you reuse a saved comparison or local result without rebuilding it? Give one data handoff.",
+    "If automatic subdivision has stopped, what can an observer still do?",
+    "Which statements can be checked mechanically, and which require seeing original pictures or remain unknown?",
+    "Propose three original observations combining tools. For each specify a value passed between calls, optional/sufficient steps, failure recovery and a stopping point."
+  ],
+  "forms": {
+    "early":[
+      ["A01","A 40-minute repair video may contain a sticky paper flag briefly unfolding. The time is unknown and only one corner changes. What would you first locate, and how could you verify it or report uncertainty?","activity/range clues or free search followed by actual originals; a narrow crop only after receipts; missed cue not absence"],
+      ["A02","Two verified original views show a closed flap and a loose flap eight seconds later. You have no view from the interval. Explain how you would obtain the intermediate evidence and what would stay unresolved.","bounds from original PTS; free range reread or existing node and time refinement; insufficient evidence for continuous action"],
+      ["A03","A comparison already gave result_ref vo-example, but its brief output omits the coordinate distribution. You want to inspect where it disagreed in the original image and avoid running it again.","evidence_detail using saved ref/path then source-referenced region if needed; distinguish coordinate spaces"],
+      ["A04","A loading belt contains several very similar clips around similar-looking guides. You need evidence of repeated presentation versus a different object replacing one. The item moves within the image.","direct/coarse search for navigation and cropped multi-reference comparisons; two views do not prove continuity/identity"],
+      ["A05","A shelf moves in image coordinates when the phone swings. A clipped tag also shifts. How could you investigate which part of the apparent change the camera accounts for?","registered and original pair, local vs excluded context, residual, applicability/overlap limitations"],
+      ["A06","A colleague cites a retained local crop and its original as independent corroboration. You need their exact scope and want to reuse their existing proof.","evidence_reference parent identity and scope, existing receipts/detail; do not double count same root"],
+      ["A07","In a saved investigation the automatic policy stopped. A real source interval still sits between two samples, but the reviewer has a good reason to see an interior frame. What would you request?","query matching node and legal refine or unrestricted source_resample; stop not authorization; exact PTS versus seconds"],
+      ["A08","A question asks only the color at a previously delivered, sharp opening original. Both citation and pixel answer are already available. What is a reasonable next action?","stop and cite; additional measuring unlikely to help"],
+      ["A09","An earlier note says a ring is visible after a doorway moment. You have its revision identifier and want to check whether its media citation actually resolves to the indicated image.","record/review/evidence_reference plus claim_verify or exact reread; integrity distinct from semantic correctness"],
+      ["A10","A newly delivered side view shows a clip remaining attached where a previous written observation said it had come off. Give a plan that preserves the historical record and corrects the answer.","open dispute or append revision with original/counter evidence and dependency review; no silent overwrite"]
+    ],
+    "late":[
+      ["B01","A museum-case reflection may briefly reveal a handheld card somewhere in a long fixed shot. The recording also has repeated changes elsewhere. Explain how you would make a useful search plan without claiming the card is absent if an index misses it.","clues by region/range and legal source work; known no evidence rather than no event, no exclusive tool"],
+      ["B02","A small wingnut appears on opposite sides of a fixture in two received frames. The relevant span has an already saved parent branch with disjoint samples. What options exist to inspect missing time, and how would you word the result?","retrieve/reference existing branch then time refinement or direct interval; distinguish sampled positions and unknown continuation"],
+      ["B03","A source-stamped report lists a projected distance change but omits the contained patch and saved field coordinates. It supplies a calculation identifier and one frame citation. You need their relationship.","recover saved fields/evidence roots; direct region proof from original, source-specific units"],
+      ["B04","A nighttime camera records a carrier leaving and a second similar silhouette entering after the light changes. You have several stored local views around the two gaps. How would you use them to investigate recurrence without declaring an identity?","lookup prototypes and exact local validation; compare to other hypothesis; hidden gap is unknown"],
+      ["B05","A fold in a curtain changes as the lens zooms. Two originals are available, but some of the overlap is patterned fabric. How could you make a useful comparison without treating a good match as reliable everywhere?","phase and SIFT applicability/holdout, target vs context/ROI; read images and report unknown"],
+      ["B06","An earlier source reread at a non-catalogue time has a crop, a state claim and a reference to the same region. You want to recover these references to avoid another reread and to identify reused evidence.","query evidence_routes/ref review; distinguish same frame/crop and independent roots, no new decode required"],
+      ["B07","A sparse time bracket was marked complete by one automatic policy at the scale of the whole file. There is a location-sensitive residual on an already examined endpoint. You want to narrow a local uncertainty. What is permitted?","node query if useful, optional ROI refinement with known PTS and ROI or direct reread; global stop scoped and no interpretation"],
+      ["B08","The task asks only whether a painted outline is visible at the cited sample. A validated crop is ambiguous but the existing full original clearly shows the outline. Explain when the investigation can finish.","already distinguish current original from crop; cite adequate evidence; no extra calls"],
+      ["B09","A previous statement asserted contact between two shapes from a projected-distance calculation, without maintaining a reference to any original. You have a revision ID and one candidate earlier sample.","inspect scope and review, get original if necessary, no 3D contact guarantee, preserve ambiguity"],
+      ["B10","An old source-cited observation is wrong about which side a tape marker appeared on. A later image also shows an unrelated orientation change. Explain how to correct only the supported part and find any claims that depended on it.","record counter-evidence and revise appropriate record with scope, dependency review rather than rewriting"]
+    ]
+  }
+}
