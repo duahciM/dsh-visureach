@@ -1,6 +1,0 @@
-- insert:
-    - id: visureach-amr-research
-      name: '@local/visureach-amr-research'
-      config:
-        arm: A2
-        automaticPolicy: S0
